@@ -42,13 +42,23 @@ describe("worktrees.remove/restore padded ids on live registry", () => {
     expect(getRegistryWorktree(env, created.id)?.removedAt).toBeUndefined();
     await fs.stat(created.path);
 
+    for (const id of ["   ", "\t\n"]) {
+      expect(await call(handlers, "worktrees.remove", { id })).toEqual([
+        false,
+        undefined,
+        { code: "UNAVAILABLE", message: `Error: unknown active worktree: ${id}` },
+      ]);
+      await expect(call(handlers, "worktrees.restore", { id })).rejects.toThrow(
+        `worktree ${id} is not restorable`,
+      );
+    }
+
     await expect(
       service.remove({ id: ` ${created.id} `, reason: "manual-delete" }),
     ).rejects.toThrow(/unknown active worktree/);
 
     const removeResult = await call(handlers, "worktrees.remove", {
       id: ` ${created.id} `,
-      force: true,
     });
     expect(removeResult?.[0]).toBe(true);
     expect(removeResult?.[1]).toMatchObject({ removed: true });
