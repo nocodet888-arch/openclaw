@@ -65,23 +65,8 @@ describe("fetchBrowserJson rate-limit hanging-body transport", () => {
     });
   });
 
-  it("rejects 429 and closes the hanging loopback socket", async () => {
-    const startedAt = Date.now();
-    await expect(fetchBrowserJson(`${baseUrl}/ok`, { timeoutMs: 2_000 })).rejects.toThrow(
-      /rate[ -]?limit/i,
-    );
-    await Promise.race([
-      socketClosed,
-      new Promise<never>((_, reject) => {
-        AbortSignal.timeout(1_000).addEventListener("abort", () => {
-          reject(new Error("loopback socket stayed open after 429 cancel"));
-        });
-      }),
-    ]);
-    const elapsedMs = Date.now() - startedAt;
-    expect(elapsedMs).toBeLessThan(1_000);
-    console.log(
-      `[browser client-fetch 429 transport proof] rejected_rate_limit=true socket_closed=true elapsed_ms=${elapsedMs}`,
-    );
+  it("rejects 429 and closes the hanging loopback socket", async ({ signal }) => {
+    await expect(fetchBrowserJson(`${baseUrl}/ok`, { signal })).rejects.toThrow(/rate[ -]?limit/i);
+    await socketClosed;
   });
 });

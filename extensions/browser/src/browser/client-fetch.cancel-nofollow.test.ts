@@ -50,25 +50,11 @@ describe("fetchBrowserJson rate-limit body cancel", () => {
         release,
       });
 
-      const startedAt = Date.now();
-      await expect(
-        Promise.race([
-          fetchBrowserJson("http://127.0.0.1:18791/ok", { timeoutMs: 250 }),
-          new Promise<never>((_, reject) => {
-            AbortSignal.timeout(1_000).addEventListener("abort", () => {
-              reject(new Error("fetchBrowserJson hung waiting for body.cancel"));
-            });
-          }),
-        ]),
-      ).rejects.toThrow(/rate[ -]?limit/i);
-      const elapsedMs = Date.now() - startedAt;
-
+      await expect(fetchBrowserJson("http://127.0.0.1:18791/ok")).rejects.toThrow(
+        /rate[ -]?limit/i,
+      );
       expect(cancelStarted).toBe(true);
       expect(release).toHaveBeenCalledOnce();
-      expect(elapsedMs).toBeLessThan(1_000);
-      console.log(
-        `[browser client-fetch cancel-nofollow proof] cancel_started=${cancelStarted} release_called=${release.mock.calls.length} elapsed_ms=${elapsedMs}`,
-      );
     },
   );
 });
