@@ -1,18 +1,12 @@
-// Real HTTP: production fetchBrowserJson must cancel an unread 429 body and
-// release the loopback socket without awaiting a never-ending stream.
+// Control: uncaptured HTTP responses still release their socket when the body never ends.
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const authMocks = vi.hoisted(() => ({
-  loadConfig: vi.fn(() => ({})),
   resolveBrowserControlAuth: vi.fn(() => ({})),
   getBridgeAuthForPort: vi.fn(() => undefined),
 }));
 
-vi.mock("../config/config.js", async () => {
-  const actual = await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
-  return { ...actual, getRuntimeConfig: authMocks.loadConfig, loadConfig: authMocks.loadConfig };
-});
 vi.mock("./control-auth.js", () => ({
   resolveBrowserControlAuth: authMocks.resolveBrowserControlAuth,
 }));
@@ -29,16 +23,24 @@ describe("fetchBrowserJson rate-limit hanging-body transport", () => {
   let resolveSocketClosed: () => void;
 
   beforeEach(async () => {
-    for (const key of ["ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"]) {
+    for (const key of [
+      "ALL_PROXY",
+      "all_proxy",
+      "HTTP_PROXY",
+      "http_proxy",
+      "HTTPS_PROXY",
+      "https_proxy",
+    ]) {
       vi.stubEnv(key, "");
     }
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "0");
     socketClosed = new Promise<void>((resolve) => {
       resolveSocketClosed = resolve;
     });
     server = http.createServer((_req, res) => {
       res.socket?.once("close", () => resolveSocketClosed());
       res.writeHead(429, { "Content-Type": "application/json" });
-      // Leave the body unread so production discardResponseBody must cancel it.
+      // Keep the response open so consuming it cannot release the socket.
       res.write('{"error":"rate-limited"');
     });
     await new Promise<void>((resolve, reject) => {

@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   fetchWithSsrFGuard: vi.fn(),
-  loadConfig: vi.fn(() => ({})),
   resolveBrowserControlAuth: vi.fn(() => ({})),
   getBridgeAuthForPort: vi.fn(() => undefined),
 }));
@@ -16,10 +15,6 @@ vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => {
   };
 });
 
-vi.mock("../config/config.js", async () => {
-  const actual = await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
-  return { ...actual, getRuntimeConfig: mocks.loadConfig, loadConfig: mocks.loadConfig };
-});
 vi.mock("./control-auth.js", () => ({
   resolveBrowserControlAuth: mocks.resolveBrowserControlAuth,
 }));
@@ -35,21 +30,21 @@ afterEach(() => {
 });
 
 describe("fetchBrowserJson rate-limit body cancel", () => {
-  it("rejects without waiting when unread 429 body cancel never settles", async () => {
+  it.each(["pending", "rejected"])("rejects promptly when body cancellation is %s", async (state) => {
     let cancelStarted = false;
     const release = vi.fn(async () => {});
     mocks.fetchWithSsrFGuard.mockResolvedValueOnce({
-      response: {
-        ok: false,
-        status: 429,
-        bodyUsed: false,
-        body: {
+      response: new Response(
+        new ReadableStream({
           cancel: () => {
             cancelStarted = true;
-            return new Promise(() => {});
+            return state === "pending"
+              ? new Promise<void>(() => {})
+              : Promise.reject(new Error("cancellation failed"));
           },
-        },
-      } as unknown as Response,
+        }),
+        { status: 429 },
+      ),
       release,
     });
 
