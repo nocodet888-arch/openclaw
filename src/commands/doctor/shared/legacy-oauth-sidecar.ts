@@ -4,18 +4,18 @@ import { createDecipheriv, hash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isPathInside } from "@openclaw/fs-safe/path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString as readNonEmptyString } from "@openclaw/normalization-core/string-coerce";
-import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import {
+  normalizeUniqueTrimmedStringList,
+  uniqueStrings,
+} from "@openclaw/normalization-core/string-normalization";
 import { authProfilesLog } from "../../../agents/auth-profiles/constants.js";
 import { LEGACY_OAUTH_REF_PROVIDER } from "../../../agents/auth-profiles/legacy-oauth-ref.js";
 import type { LegacyOAuthRef } from "../../../agents/auth-profiles/legacy-oauth-ref.js";
 import { resolveOAuthDir, resolveStateDir } from "../../../config/paths.js";
 import { loadJsonFileThroughSymlink } from "../../../infra/json-file.js";
-import { isPathInside } from "../../../infra/path-safety.js";
-
-export { isLegacyOAuthRef } from "../../../agents/auth-profiles/legacy-oauth-ref.js";
-export type { LegacyOAuthRef } from "../../../agents/auth-profiles/legacy-oauth-ref.js";
 
 const LEGACY_OAUTH_SECRET_DIRNAME = "auth-profiles";
 const LEGACY_OAUTH_SECRET_VERSION = 1;
@@ -25,7 +25,7 @@ const LEGACY_OAUTH_SECRET_KEYCHAIN_SERVICE = "OpenClaw Auth Profile Secrets";
 const LEGACY_OAUTH_SECRET_KEYCHAIN_ACCOUNT = "oauth-profile-master-key";
 const LEGACY_OAUTH_SECRET_KEY_FILE_NAME = "auth-profile-secret-key";
 
-export type LegacyOAuthSecretMaterial = {
+type LegacyOAuthSecretMaterial = {
   /** OAuth access token from the legacy sidecar. */
   access?: string;
   /** OAuth refresh token from the legacy sidecar. */
@@ -115,39 +115,19 @@ function uniquePaths(paths: Array<string | undefined>): string[] {
 }
 
 function resolveLegacyOAuthSecretKeyFileCandidates(env: NodeJS.ProcessEnv): string[] {
+  const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME)?.trim() || os.homedir();
+  let root: string | undefined;
+  let directory = "OpenClaw";
   if (process.platform === "win32") {
-    const home = env.USERPROFILE?.trim() || os.homedir();
-    const root = env.APPDATA?.trim() || (home ? path.join(home, "AppData", "Roaming") : undefined);
-    return uniquePaths([
-      root ? path.join(root, "OpenClaw", LEGACY_OAUTH_SECRET_KEY_FILE_NAME) : undefined,
-      home
-        ? path.join(home, ".openclaw-auth-profile-secrets", LEGACY_OAUTH_SECRET_KEY_FILE_NAME)
-        : undefined,
-    ]);
+    root = env.APPDATA?.trim() || (home ? path.join(home, "AppData", "Roaming") : undefined);
+  } else if (process.platform === "darwin") {
+    root = home ? path.join(home, "Library", "Application Support") : undefined;
+  } else {
+    root = env.XDG_CONFIG_HOME?.trim() || (home ? path.join(home, ".config") : undefined);
+    directory = "openclaw";
   }
-
-  if (process.platform === "darwin") {
-    const home = env.HOME?.trim() || os.homedir();
-    return uniquePaths([
-      home
-        ? path.join(
-            home,
-            "Library",
-            "Application Support",
-            "OpenClaw",
-            LEGACY_OAUTH_SECRET_KEY_FILE_NAME,
-          )
-        : undefined,
-      home
-        ? path.join(home, ".openclaw-auth-profile-secrets", LEGACY_OAUTH_SECRET_KEY_FILE_NAME)
-        : undefined,
-    ]);
-  }
-
-  const home = env.HOME?.trim() || os.homedir();
-  const root = env.XDG_CONFIG_HOME?.trim() || (home ? path.join(home, ".config") : undefined);
   return uniquePaths([
-    root ? path.join(root, "openclaw", LEGACY_OAUTH_SECRET_KEY_FILE_NAME) : undefined,
+    root ? path.join(root, directory, LEGACY_OAUTH_SECRET_KEY_FILE_NAME) : undefined,
     home
       ? path.join(home, ".openclaw-auth-profile-secrets", LEGACY_OAUTH_SECRET_KEY_FILE_NAME)
       : undefined,
@@ -211,19 +191,13 @@ function readLegacyMacOAuthSecretKeychainKey(params: {
 }
 
 function resolveLegacyOAuthSecretKeySeeds(env: NodeJS.ProcessEnv): string[] {
-  const seeds: string[] = [];
-  const addSeed = (value: string | undefined): void => {
-    const trimmed = value?.trim();
-    if (trimmed && !seeds.includes(trimmed)) {
-      seeds.push(trimmed);
-    }
-  };
-  addSeed(env[LEGACY_OAUTH_SECRET_KEY_ENV]);
-  if (env.NODE_ENV === "test" && env.VITEST === "true") {
-    addSeed("openclaw-test-oauth-profile-secret-key");
-  }
-  addSeed(readLegacyOAuthSecretKeyFile(env));
-  return seeds;
+  return normalizeUniqueTrimmedStringList([
+    env[LEGACY_OAUTH_SECRET_KEY_ENV],
+    env.NODE_ENV === "test" && env.VITEST === "true"
+      ? "openclaw-test-oauth-profile-secret-key"
+      : undefined,
+    readLegacyOAuthSecretKeyFile(env),
+  ]);
 }
 
 function decryptLegacyOAuthSecretMaterialWithSeed(

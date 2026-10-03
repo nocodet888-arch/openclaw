@@ -1,5 +1,6 @@
-import { type Relay, finalizeEvent, type Event } from "nostr-tools";
+import { finalizeEvent, verifyEvent, type Event } from "nostr-tools";
 import { createChannelReplayGuard } from "openclaw/plugin-sdk/persistent-dedupe";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   queryBuzzDirectoryProfiles,
   queryBuzzDirectoryRooms,
@@ -9,6 +10,7 @@ import { BuzzDirectoryState } from "./directory-state.js";
 import { inspectBuzzMentionSyntax, resolveBuzzMessageMentions } from "./mentions.js";
 import {
   BUZZ_NORMAL_MESSAGE_KIND,
+  BUZZ_INBOUND_MESSAGE_KINDS,
   BUZZ_TYPING_INDICATOR_KIND,
   buildBuzzMessageTags,
   parseBuzzMessageEvent,
@@ -20,6 +22,7 @@ import {
   connectAuthenticatedBuzzRelaySession,
   parseBuzzAuthTag,
 } from "./relay-auth.js";
+import { queryBuzzRelaySnapshot } from "./relay-subscription.js";
 import {
   BUZZ_REPLAY_DISPATCH_MAX_PENDING,
   createBuzzReplayDispatchQueue,
@@ -37,11 +40,13 @@ const REPLAY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const REPLAY_MAX_ENTRIES = 10_000;
 const REPLAY_STATE_MAX_ENTRIES = 50_000;
 const REPLAY_NAMESPACE_PREFIX = "buzz.inbound-dedupe";
+const THREAD_ROOT_CACHE_MAX_ENTRIES = 1_024;
 
 export interface BuzzBus {
   publicKey: string;
   directory: BuzzDirectoryState;
   refreshDirectory: () => Promise<void>;
+  isBotOwnedThread: (params: { channelId: string; threadId: string }) => Promise<boolean>;
   sendText: (params: {
     channelId: string;
     text: string;
@@ -102,54 +107,6 @@ function buildBuzzPresenceEvent(secretKey: Uint8Array): Event {
     },
     secretKey,
   );
-}
-
-function startBuzzPresenceHeartbeat(params: {
-  relay: Relay;
-  secretKey: Uint8Array;
-  onError?: (error: Error) => void;
-  onFatalError: (error: Error) => void;
-}): () => void {
-  let stopped = false;
-  let publishInFlight = false;
-  let errorReported = false;
-
-  const publishOnline = async () => {
-    if (stopped || publishInFlight) {
-      return;
-    }
-    publishInFlight = true;
-    try {
-      await params.relay.publish(buildBuzzPresenceEvent(params.secretKey));
-      errorReported = false;
-    } catch (error) {
-      const failure =
-        error instanceof Error
-          ? error
-          : new Error("Buzz presence heartbeat failed", { cause: error });
-      // nostr-tools rejects an unacknowledged publish without closing its socket.
-      // Reconnect that stalled session; an explicit relay rejection is only a warning.
-      if (!stopped && failure.message === "publish timed out") {
-        params.onFatalError(failure);
-      } else if (!stopped && !errorReported) {
-        errorReported = true;
-        params.onError?.(failure);
-      }
-    } finally {
-      publishInFlight = false;
-    }
-  };
-
-  void publishOnline();
-  const timer = setInterval(() => {
-    void publishOnline();
-  }, PRESENCE_HEARTBEAT_INTERVAL_MS);
-  timer.unref?.();
-
-  return () => {
-    stopped = true;
-    clearInterval(timer);
-  };
 }
 
 export async function sendBuzzTextOneShot(params: {
@@ -221,6 +178,7 @@ export async function sendBuzzTextOneShot(params: {
 }
 
 export async function startBuzzBus(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   relayUrl: string;
   privateKey: string;
@@ -252,9 +210,12 @@ export async function startBuzzBus(options: {
   const authTag = parseBuzzAuthTag(options.authTag ?? "");
   const sessionStartedAt = Math.floor(Date.now() / 1000);
   const lifecycleAbort = new AbortController();
-  const signal = options.signal
-    ? AbortSignal.any([options.signal, lifecycleAbort.signal])
-    : lifecycleAbort.signal;
+  const presenceScheduler = options.scheduler.scope();
+  const signal = AbortSignal.any([
+    lifecycleAbort.signal,
+    presenceScheduler.signal,
+    ...(options.signal ? [options.signal] : []),
+  ]);
   const reportFatalError = (error: Error) => {
     if (signal.aborted) {
       return;
@@ -294,13 +255,65 @@ export async function startBuzzBus(options: {
     profileLimit: subscriptionBudget.profileLimit,
   });
   let directoryRelay: ReturnType<typeof startBuzzDirectoryRelay> | undefined;
-  let stopPresenceHeartbeat = () => {};
   let profileTask: Promise<void> | undefined;
   let membershipTracker: Awaited<ReturnType<typeof createBuzzRoomMembershipTracker>> | undefined;
+  const threadRoots = new Map<string, { channelId: string; isBotOwned: boolean }>();
+  const rememberThreadRoot = (event: Event) => {
+    const root = parseBuzzMessageEvent(event);
+    if (!root || root.threadId || !verifyEvent(event)) {
+      return;
+    }
+    threadRoots.set(event.id, {
+      channelId: root.channelId.toLowerCase(),
+      isBotOwned: event.pubkey === publicKey,
+    });
+    if (threadRoots.size > THREAD_ROOT_CACHE_MAX_ENTRIES) {
+      const oldest = threadRoots.keys().next().value;
+      if (oldest) {
+        threadRoots.delete(oldest);
+      }
+    }
+  };
   const bus: BuzzBus = {
     publicKey,
     directory,
     refreshDirectory: async () => await directoryRelay?.refreshRooms(options.channelIds),
+    isBotOwnedThread: async ({ channelId, threadId }) => {
+      signal.throwIfAborted();
+      if (!threadRoots.has(threadId)) {
+        try {
+          await queryBuzzRelaySnapshot({
+            relay,
+            filters: [{ ids: [threadId], kinds: [...BUZZ_INBOUND_MESSAGE_KINDS], limit: 1 }],
+            signal,
+            timeoutMessage: "Timed out loading Buzz thread root",
+            abortMessage: "Buzz thread root query aborted",
+            failureMessage: "Buzz thread root query failed",
+            closeReason: "thread root loaded",
+            closeMessage: (reason) => `Buzz thread root query closed: ${reason}`,
+            onEvent: (event) => {
+              if (event.id === threadId) {
+                rememberThreadRoot(event);
+              }
+            },
+            result: () => {},
+            onTimeout: reportFatalError,
+            checkAbortAfterSubscribe: true,
+          });
+        } catch (error) {
+          signal.throwIfAborted();
+          options.onMessageError?.(
+            error instanceof Error
+              ? error
+              : new Error("Buzz thread root query failed", { cause: error }),
+          );
+          return false;
+        }
+      }
+      signal.throwIfAborted();
+      const root = threadRoots.get(threadId);
+      return root?.channelId === channelId && root.isBotOwned;
+    },
     sendText: async ({ channelId, text, threadId, replyToId }) => {
       signal.throwIfAborted();
       const mentionSyntax = inspectBuzzMentionSyntax(text);
@@ -321,6 +334,7 @@ export async function startBuzzBus(options: {
         mentionedPubkeys,
       });
       await relay.publish(event);
+      rememberThreadRoot(event);
       return event.id;
     },
     sendTyping: async ({ channelId, threadId, replyToId }) => {
@@ -337,15 +351,16 @@ export async function startBuzzBus(options: {
     },
     close: async () => {
       lifecycleAbort.abort(new Error("Buzz bus closed"));
+      presenceScheduler.beginClose();
       // Abort this generation's agent turns before draining stale work.
       await dispatchQueue.close();
-      stopPresenceHeartbeat();
       directoryRelay?.close();
       replayGuard.clearMemory();
+      threadRoots.clear();
       relay.close();
       await membershipTracker?.close();
-      // Relay close rejects pending publishes; join their profile continuation afterward.
-      await profileTask;
+      // Relay close rejects pending publishes; join their continuations afterward.
+      await Promise.all([presenceScheduler.stop(), profileTask]);
     },
   };
 
@@ -393,7 +408,11 @@ export async function startBuzzBus(options: {
             onHistoryError: options.onHistoryError,
             onRoomUnavailable: options.onRoomUnavailable,
             onMessageEvent: (event, isMember, reservation) => {
-              if (signal.aborted || event.pubkey === publicKey) {
+              if (signal.aborted) {
+                return;
+              }
+              if (event.pubkey === publicKey) {
+                rememberThreadRoot(event);
                 return;
               }
               const message = parseBuzzMessageEvent(event);
@@ -457,11 +476,32 @@ export async function startBuzzBus(options: {
     directory.replaceMemberships(membershipTracker?.memberships() ?? new Map());
     directoryRelay.replaceProfilePublicKeys(directory.profilePublicKeys());
     void membershipTracker?.catchUpHistory();
-    stopPresenceHeartbeat = startBuzzPresenceHeartbeat({
-      relay,
-      secretKey,
-      onError: options.onPresenceError,
-      onFatalError: reportFatalError,
+    let presenceErrorReported = false;
+    presenceScheduler.schedule({
+      id: "presence",
+      delayMs: 0,
+      everyMs: PRESENCE_HEARTBEAT_INTERVAL_MS,
+      run: async () => {
+        try {
+          await relay.publish(buildBuzzPresenceEvent(secretKey));
+          presenceErrorReported = false;
+        } catch (error) {
+          if (signal.aborted) {
+            return;
+          }
+          const failure =
+            error instanceof Error
+              ? error
+              : new Error("Buzz presence heartbeat failed", { cause: error });
+          // nostr-tools rejects an unacknowledged publish without closing its socket.
+          if (failure.message === "publish timed out") {
+            reportFatalError(failure);
+          } else if (!presenceErrorReported) {
+            presenceErrorReported = true;
+            options.onPresenceError?.(failure);
+          }
+        }
+      },
     });
     if (options.profileName?.trim()) {
       profileTask = syncBuzzProfile({
@@ -493,9 +533,11 @@ export async function startBuzzBus(options: {
     return bus;
   } catch (error) {
     lifecycleAbort.abort(error);
+    presenceScheduler.beginClose();
     await dispatchQueue.close();
     directoryRelay?.close();
     relay.close();
+    await presenceScheduler.stop();
     throw error;
   }
 }
