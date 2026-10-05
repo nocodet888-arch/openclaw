@@ -56,17 +56,27 @@ describe("status text truncation", () => {
       chatRunStartup: { state: "status", runId: "run-1", phase: "starting_model" },
       toolStreamSyncTimer: 1,
     });
-    handleAgentEvent(host, agentEvent("run-1", 1, "run_status", {
-      phase: "retrying",
-      message: input,
-    }));
-    expect(chatStartupStatusLabel(activeChatRunStartupStatus(host.chatRunStartup), null)).toBe(expected);
-    handleAgentEvent(host, agentEvent("run-1", 2, "system", {
-      phase: "provider_policy",
-      state: "fallback",
-      model: input,
-      fallbackModel: input,
-    }));
+    handleAgentEvent(
+      host,
+      agentEvent("run-1", 1, "run_status", {
+        phase: "retrying",
+        message: input,
+      }),
+    );
+    expect(chatStartupStatusLabel(activeChatRunStartupStatus(host.chatRunStartup), null)).toBe(
+      expected,
+    );
+    handleAgentEvent(
+      host,
+      agentEvent("run-1", 2, "notice", {
+        phase: "provider_policy",
+        category: "cyber",
+        provider: "openai",
+        state: "fallback",
+        model: input,
+        fallbackModel: input,
+      }),
+    );
     expect(host.providerPolicyNotice?.model).toBe(expected);
     expect(host.providerPolicyNotice?.fallbackModel).toBe(expected);
   });
