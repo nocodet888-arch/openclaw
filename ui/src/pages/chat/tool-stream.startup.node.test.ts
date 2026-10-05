@@ -98,4 +98,25 @@ describe("app-tool-stream startup status", () => {
       expect(retryLabel()).toBe(retry.data.message);
     },
   );
+
+
+  it("keeps a retry message intact when truncation lands on a surrogate pair", () => {
+    const host = createStartupHost();
+    const emoji = "😀";
+    // 255 BMP chars + one emoji (2 UTF-16 units) => raw slice(0, 256) splits the pair.
+    const message = `${"x".repeat(255)}${emoji} trailing`;
+    handleAgentEvent(host, {
+      runId: "run-1",
+      seq: 3,
+      stream: "run_status",
+      ts: 3,
+      sessionKey: "main",
+      data: { phase: "retrying", message },
+    });
+    const label = chatStartupStatusLabel(activeChatRunStartupStatus(host.chatRunStartup), null);
+    expect(label).toBe(`${"x".repeat(255)}`);
+    expect(label).not.toMatch(/[\uD800-\uDBFF]$/u);
+    expect(label?.includes("\uFFFD") ?? false).toBe(false);
+  });
+
 });
