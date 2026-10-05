@@ -3,10 +3,10 @@ import {
   normalizeNullableString as toTrimmedString,
   normalizeLowercaseStringOrEmpty,
 } from "@openclaw/normalization-core/string-coerce";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { SessionOperationEvent } from "../../../../packages/gateway-protocol/src/schema/sessions.js";
 import type { ExecApprovalRequest } from "../../app/exec-approval.ts";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatUiError, formatUiExternalText } from "../../lib/format-error.ts";
 import { uiSessionEventMatches } from "../../lib/sessions/session-key.ts";
 import { reconcileChatRunStartup } from "./chat-run-startup.ts";
