@@ -38,6 +38,7 @@ import {
   TOOL_PROGRESS_ECHO_PREFIX_MIN_CHARS,
   TOOL_PROGRESS_ECHO_SIGNATURE_CAP,
   toolOutputRawEchoSignature,
+  truncateUtf16SafeEchoPrefix,
 } from "./event-projector-tool-output.js";
 import { codexApprovalTimeoutText, type CodexApprovalKind } from "./plugin-approval-roundtrip.js";
 import type {
@@ -586,7 +587,9 @@ export class CodexToolProgressProjection {
     ) {
       const next: ToolProgressRawSignature = {
         length: rawLength,
-        prefix: rawPrefix.slice(0, TOOL_TRANSCRIPT_OUTPUT_MAX_CHARS),
+        // Cap UTF-16-safe while keeping a full scalar at the budget edge so
+        // matchesEcho retains a boundary discriminator (no lone surrogate).
+        prefix: truncateUtf16SafeEchoPrefix(rawPrefix, TOOL_TRANSCRIPT_OUTPUT_MAX_CHARS),
       };
       if (signature.streamedDisplay) {
         existing.streamedRawSignature = next;

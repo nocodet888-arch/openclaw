@@ -45,6 +45,37 @@ export function readCodexResponseOutput(item: JsonObject): string | undefined {
 export const TOOL_PROGRESS_ECHO_PREFIX_MIN_CHARS = 1_024;
 export const TOOL_PROGRESS_ECHO_SIGNATURE_CAP = MAX_TOOL_OUTPUT_DELTA_MESSAGES_PER_ITEM + 4;
 
+function isHighSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+/**
+ * Echo-prefix truncation that stays UTF-16-safe while retaining a boundary
+ * discriminator. Unlike truncateUtf16Safe (which backs off when the budget
+ * lands mid-surrogate), this includes the full scalar so matchesEcho cannot
+ * falsely suppress distinct same-length assistant text that only shares the
+ * shortened ASCII prefix.
+ */
+export function truncateUtf16SafeEchoPrefix(input: string, maxLen: number): string {
+  const limit = Math.max(0, Math.floor(maxLen));
+  if (input.length <= limit) {
+    return input;
+  }
+  if (
+    limit > 0 &&
+    limit < input.length &&
+    isHighSurrogate(input.charCodeAt(limit - 1)) &&
+    isLowSurrogate(input.charCodeAt(limit))
+  ) {
+    return input.slice(0, limit + 1);
+  }
+  return input.slice(0, limit);
+}
+
 export function toolOutputRawEchoSignature(
   text: string,
 ): { rawLength: number; rawPrefix: string } | undefined {
@@ -54,6 +85,8 @@ export function toolOutputRawEchoSignature(
   }
   return {
     rawLength: trimmed.length,
-    rawPrefix: trimmed.slice(0, TOOL_TRANSCRIPT_OUTPUT_MAX_CHARS),
+    // Prefer a full scalar at the transcript budget so echo matching keeps a
+    // boundary discriminator (raw .slice would leave a lone surrogate).
+    rawPrefix: truncateUtf16SafeEchoPrefix(trimmed, TOOL_TRANSCRIPT_OUTPUT_MAX_CHARS),
   };
 }
