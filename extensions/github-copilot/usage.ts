@@ -38,7 +38,10 @@ export async function fetchCopilotUsage(
   );
 
   if (!res.ok) {
-    await res.body?.cancel().catch(() => undefined);
+    // Match runtime-auth: a capture tee must not delay the already-known usage failure.
+    if (!res.bodyUsed) {
+      void res.body?.cancel().catch(() => undefined);
+    }
     return buildUsageHttpErrorSnapshot({
       provider: "github-copilot",
       status: res.status,
