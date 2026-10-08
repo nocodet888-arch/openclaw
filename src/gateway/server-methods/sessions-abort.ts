@@ -11,7 +11,7 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-manager-api.js";
 import {
-  abortEmbeddedAgentRun,
+  abortOwnedEmbeddedAgentRun,
   isEmbeddedAgentRunActive,
   resolveActiveEmbeddedRunOwner,
   resolveActiveEmbeddedRunOwnerByRunId,
@@ -459,12 +459,20 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const capturedSessionEmbeddedRun = persistedSessionId
       ? resolveActiveEmbeddedRunOwner(persistedSessionId)
       : undefined;
+    // Session ids are not an agent boundary: Stop only selects this agent's run.
+    const capturedRunIsOwned =
+      capturedSessionEmbeddedRun !== undefined &&
+      resolveChatRunOwnerAgentId({
+        agentId: capturedSessionEmbeddedRun.agentId,
+        sessionKey: capturedSessionEmbeddedRun.sessionKey,
+        defaultAgentId: stableTargetOwner,
+      }) === normalizeAgentId(targetAgentId);
     const sessionEmbeddedRun =
-      !narrow ||
-      (capturedSessionEmbeddedRun &&
-        capturedSessionEmbeddedRun.sessionId === requiredSessionId &&
-        (capturedSessionEmbeddedRun.sessionKey === key ||
-          capturedSessionEmbeddedRun.sessionKey === canonicalKey))
+      capturedRunIsOwned &&
+      (!narrow ||
+        (capturedSessionEmbeddedRun.sessionId === requiredSessionId &&
+          (capturedSessionEmbeddedRun.sessionKey === key ||
+            capturedSessionEmbeddedRun.sessionKey === canonicalKey)))
         ? capturedSessionEmbeddedRun
         : undefined;
     const embeddedController = sessionEmbeddedRun
@@ -547,7 +555,11 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
               persistedSessionId && canonicalKey !== "global" && !embeddedController
                 ? sessionEmbeddedRun
                   ? sessionEmbeddedRun.abort()
-                  : !narrow && abortEmbeddedAgentRun(persistedSessionId)
+                  : !narrow &&
+                    abortOwnedEmbeddedAgentRun(persistedSessionId, {
+                      agentId: targetAgentId,
+                      ...(stableTargetOwner ? { defaultAgentId: stableTargetOwner } : {}),
+                    })
                 : false;
             if (embeddedAborted && sessionEmbeddedRun) {
               embeddedAbortPersistence = persistSessionAbort(sessionEmbeddedRun);

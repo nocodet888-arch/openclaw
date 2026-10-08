@@ -6,9 +6,10 @@ import {
   type SessionWorkspaceRecoveryRequiredErrorDetails,
 } from "../../../packages/gateway-protocol/src/index.js";
 import {
-  abortEmbeddedAgentRun,
-  isEmbeddedAgentRunInProgress,
-  waitForEmbeddedAgentRunEnd,
+  abortOwnedEmbeddedAgentRun,
+  isOwnedEmbeddedAgentRunInProgress,
+  waitForOwnedEmbeddedAgentRunEnd,
+  type EmbeddedRunOwnerScope,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { createAgentRunDirectAbortError } from "../../agents/run-termination.js";
 import {
@@ -84,6 +85,14 @@ export class SessionLifecycleWorkspaceRecoveryError extends Error {
   }
 }
 
+/** Raw session ids can collide across agents; embedded work is selected by the session owner. */
+function resolveEmbeddedRunOwner(params: SessionLifecycleParams): EmbeddedRunOwnerScope {
+  return {
+    agentId: params.agentId,
+    ...(params.defaultAgentId ? { defaultAgentId: params.defaultAgentId } : {}),
+  };
+}
+
 function hasAuthoritativeSessionWork(
   params: SessionLifecycleParams,
   workerDrain: WorkerInferenceSessionDrain | undefined,
@@ -94,7 +103,9 @@ function hasAuthoritativeSessionWork(
   return (
     isCompetingSessionWorkAdmissionActive(params.storePath, params.lifecycleIdentities) ||
     resolveReplyOperationsForSession(params).length > 0 ||
-    Boolean(sessionId && isEmbeddedAgentRunInProgress(sessionId)) ||
+    Boolean(
+      sessionId && isOwnedEmbeddedAgentRunInProgress(sessionId, resolveEmbeddedRunOwner(params)),
+    ) ||
     hasSessionLifecycleQueueWork(queueTarget) ||
     hasGatewaySessionAbortOwner({
       context: params.context,
@@ -230,7 +241,9 @@ export async function prepareSessionLifecycleDrain(
               }
             }
             if (params.sessionId) {
-              aborted = abortEmbeddedAgentRun(params.sessionId) || aborted;
+              aborted =
+                abortOwnedEmbeddedAgentRun(params.sessionId, resolveEmbeddedRunOwner(params)) ||
+                aborted;
             }
             return aborted;
           },
@@ -301,7 +314,11 @@ export async function prepareSessionLifecycleDrain(
       ),
     ).then((results) => results.every(Boolean));
     const embeddedWork = params.sessionId
-      ? waitForEmbeddedAgentRunEnd(params.sessionId, timeoutMs)
+      ? waitForOwnedEmbeddedAgentRunEnd(
+          params.sessionId,
+          timeoutMs,
+          resolveEmbeddedRunOwner(params),
+        )
       : Promise.resolve(true);
     const placementWork = placement?.turnClaim
       ? placementService?.waitForTurnClaimRelease

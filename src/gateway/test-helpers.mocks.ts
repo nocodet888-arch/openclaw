@@ -19,7 +19,16 @@ import {
 
 const gatewayTestHoisted = getGatewayTestHoistedState();
 
-function createEmbeddedRunMockExports() {
+type OwnedEmbeddedRunHelpers = Partial<
+  Pick<
+    typeof import("../agents/embedded-agent-runner/runs.js"),
+    | "abortOwnedEmbeddedAgentRun"
+    | "isOwnedEmbeddedAgentRunInProgress"
+    | "waitForOwnedEmbeddedAgentRunEnd"
+  >
+>;
+
+function createEmbeddedRunMockExports(actual: OwnedEmbeddedRunHelpers = {}) {
   return {
     compactEmbeddedAgentSession: (...args: unknown[]) =>
       embeddedRunMock.compactEmbeddedAgentSession(...args),
@@ -50,6 +59,45 @@ function createEmbeddedRunMockExports() {
       }
       return ended;
     },
+    // Owner-scoped helpers honor seeded mock ids, else fall through to the real
+    // registry so tests that register real handles exercise real ownership.
+    abortOwnedEmbeddedAgentRun: (
+      sessionId: string,
+      owner: Parameters<NonNullable<OwnedEmbeddedRunHelpers["abortOwnedEmbeddedAgentRun"]>>[1],
+    ) => {
+      embeddedRunMock.abortCalls.push(sessionId);
+      return (
+        embeddedRunMock.activeIds.has(sessionId) ||
+        (actual.abortOwnedEmbeddedAgentRun?.(sessionId, owner) ?? false)
+      );
+    },
+    isOwnedEmbeddedAgentRunInProgress: (
+      sessionId: string,
+      owner: Parameters<
+        NonNullable<OwnedEmbeddedRunHelpers["isOwnedEmbeddedAgentRunInProgress"]>
+      >[1],
+    ) =>
+      embeddedRunMock.activeIds.has(sessionId) ||
+      (actual.isOwnedEmbeddedAgentRunInProgress?.(sessionId, owner) ?? false),
+    waitForOwnedEmbeddedAgentRunEnd: async (
+      sessionId: string,
+      timeoutMs: number,
+      owner: Parameters<NonNullable<OwnedEmbeddedRunHelpers["waitForOwnedEmbeddedAgentRunEnd"]>>[2],
+    ) => {
+      if (embeddedRunMock.activeIds.has(sessionId) || embeddedRunMock.waitResults.has(sessionId)) {
+        embeddedRunMock.waitCalls.push(sessionId);
+        const ended = embeddedRunMock.waitResults.get(sessionId) ?? true;
+        if (ended) {
+          embeddedRunMock.activeIds.delete(sessionId);
+          embeddedRunMock.endWaiters.get(sessionId)?.(true);
+        } else if (embeddedRunMock.resolveEndBeforeTimeoutIds.delete(sessionId)) {
+          embeddedRunMock.endWaiters.get(sessionId)?.(true);
+        }
+        return ended;
+      }
+      embeddedRunMock.waitCalls.push(sessionId);
+      return (await actual.waitForOwnedEmbeddedAgentRunEnd?.(sessionId, timeoutMs, owner)) ?? true;
+    },
   };
 }
 
@@ -59,7 +107,7 @@ async function importEmbeddedRunMockModule<TModule extends object>(
   const actual = await vi.importActual<TModule>(actualPath);
   return {
     ...actual,
-    ...createEmbeddedRunMockExports(),
+    ...createEmbeddedRunMockExports(actual as OwnedEmbeddedRunHelpers),
   };
 }
 

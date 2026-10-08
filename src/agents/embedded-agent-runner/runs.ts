@@ -849,6 +849,55 @@ export function abortEmbeddedAgentRun(
   return replyAborted || aborted;
 }
 
+/** Agent that owns a session-scoped request; `defaultAgentId` resolves unscoped keys. */
+export type EmbeddedRunOwnerScope = { agentId: string; defaultAgentId?: string };
+
+function resolveOwnedEmbeddedRunHandle(
+  sessionId: string,
+  owner: EmbeddedRunOwnerScope,
+): EmbeddedAgentQueueHandle | undefined {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+  return handle && registration && matchesSessionProgressOwner(owner, registration)
+    ? handle
+    : undefined;
+}
+
+/**
+ * Session-scoped Stop/lifecycle abort for one agent. Raw session ids are not an
+ * ownership boundary: another agent's run or reply sharing the id is left alone.
+ */
+export function abortOwnedEmbeddedAgentRun(
+  sessionId: string,
+  owner: EmbeddedRunOwnerScope,
+): boolean {
+  const handle = resolveOwnedEmbeddedRunHandle(sessionId, owner);
+  if (handle) {
+    if (!isEmbeddedRunHandleAbortable(sessionId, handle)) {
+      diag.debug(`abort failed: sessionId=${sessionId} reason=not_abortable`);
+      return false;
+    }
+    try {
+      handle.abort();
+    } catch (err) {
+      diag.warn(`abort failed: sessionId=${sessionId} err=${String(err)}`);
+      return false;
+    }
+    revokeCompletionClaim(sessionId, handle.runId);
+    notifyEmbeddedRunEnded(sessionId, handle, true);
+    return true;
+  }
+  const operation = resolveActiveReplyOperationForSessionId(sessionId);
+  if (
+    operation &&
+    matchesSessionProgressOwner(owner, { agentId: operation.agentId, sessionKey: operation.key })
+  ) {
+    return operation.abortByUser();
+  }
+  diag.debug(`abort skipped: sessionId=${sessionId} reason=no_owned_run`);
+  return false;
+}
+
 type EmbeddedHeartbeatPreemptionResult = "not-heartbeat" | "drained" | "timed-out";
 
 export async function preemptAndDrainEmbeddedHeartbeatRun(
@@ -1113,12 +1162,13 @@ export type ActiveEmbeddedRunOwner = {
   runId: string;
   sessionId: string;
   sessionKey?: string;
+  agentId?: string;
   startedAtMs?: number;
   abort: () => boolean;
 };
 
 function projectActiveEmbeddedRunOwner(
-  registration: { sessionId: string; sessionKey?: string },
+  registration: { sessionId: string; sessionKey?: string; agentId?: string },
   handle: EmbeddedAgentQueueHandle,
 ): ActiveEmbeddedRunOwner | undefined {
   const runId = handle.runId;
@@ -1129,6 +1179,7 @@ function projectActiveEmbeddedRunOwner(
     runId,
     sessionId: registration.sessionId,
     ...(registration.sessionKey ? { sessionKey: registration.sessionKey } : {}),
+    ...(registration.agentId ? { agentId: registration.agentId } : {}),
     ...(handle.startedAtMs === undefined ? {} : { startedAtMs: handle.startedAtMs }),
     // A recovered run ID is correlation only. Recheck the captured owner before
     // Stop so a stale UI action cannot abort replacement work in the session.
@@ -1270,6 +1321,36 @@ export async function waitForEmbeddedAgentRunEnd(
     }
   }
   return true;
+}
+
+/** True while `owner`'s embedded handle for the session is live. */
+export function isOwnedEmbeddedAgentRunInProgress(
+  sessionId: string,
+  owner: EmbeddedRunOwnerScope,
+): boolean {
+  return isEmbeddedRunHandleInProgress(resolveOwnedEmbeddedRunHandle(sessionId, owner));
+}
+
+/** Wait for `owner`'s embedded handle only; a foreign run sharing the id never holds this wait. */
+export async function waitForOwnedEmbeddedAgentRunEnd(
+  sessionId: string,
+  timeoutMs: number,
+  owner: EmbeddedRunOwnerScope,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const handle = resolveOwnedEmbeddedRunHandle(sessionId, owner);
+    if (!handle) {
+      return true;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return false;
+    }
+    if (!(await waitForCurrentEmbeddedAgentRunEnd(sessionId, remainingMs, handle))) {
+      return false;
+    }
+  }
 }
 
 export type AbortAndDrainEmbeddedAgentRunResult = {

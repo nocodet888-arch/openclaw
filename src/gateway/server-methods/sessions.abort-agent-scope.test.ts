@@ -20,7 +20,7 @@ import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js
 
 const chatAbortMock = vi.fn();
 const resolveSessionForRunMock = vi.fn();
-const abortEmbeddedAgentRunMock = vi.fn();
+const abortOwnedEmbeddedAgentRunMock = vi.fn();
 const clearSessionLifecycleQueuesMock = vi.fn();
 const loadSessionEntryMock = vi.fn((sessionKey: string, _opts?: { agentId?: string }) => ({
   canonicalKey: sessionKey,
@@ -57,9 +57,9 @@ vi.mock("../../agents/embedded-agent-runner/runs.js", async () => {
   );
   return {
     ...actual,
-    abortEmbeddedAgentRun: (sessionId: string) => {
-      abortEmbeddedAgentRunMock(sessionId);
-      return actual.abortEmbeddedAgentRun(sessionId);
+    abortOwnedEmbeddedAgentRun: (...args: Parameters<typeof actual.abortOwnedEmbeddedAgentRun>) => {
+      abortOwnedEmbeddedAgentRunMock(...args);
+      return actual.abortOwnedEmbeddedAgentRun(...args);
     },
   };
 });
@@ -148,7 +148,7 @@ describe("sessions.abort agent scope", () => {
     chatAbortMock.mockReset();
     resolveSessionForRunMock.mockReset();
     loadSessionEntryMock.mockReset();
-    abortEmbeddedAgentRunMock.mockReset();
+    abortOwnedEmbeddedAgentRunMock.mockReset();
     clearSessionLifecycleQueuesMock.mockReset();
     clearSessionLifecycleQueuesMock.mockReturnValue({
       followupCleared: 0,
@@ -452,7 +452,10 @@ describe("sessions.abort agent scope", () => {
         undefined,
       );
       expect(clearSessionLifecycleQueuesMock).not.toHaveBeenCalled();
-      expect(abortEmbeddedAgentRunMock).toHaveBeenCalledWith("weixin-session");
+      expect(abortOwnedEmbeddedAgentRunMock).toHaveBeenCalledWith(
+        "weixin-session",
+        expect.objectContaining({ agentId: "main" }),
+      );
       expect(weixinOperation.abortSignal.aborted).toBe(true);
       expect(telegramOperation.abortSignal.aborted).toBe(false);
       expect(broadcastToConnIds).toHaveBeenCalledWith(
@@ -512,7 +515,10 @@ describe("sessions.abort agent scope", () => {
       sessionKey: "agent:main:openclaw-weixin:direct:queued-user",
       assertCurrent: expect.any(Function),
     });
-    expect(abortEmbeddedAgentRunMock).toHaveBeenCalledWith("queued-session");
+    expect(abortOwnedEmbeddedAgentRunMock).toHaveBeenCalledWith(
+      "queued-session",
+      expect.objectContaining({ agentId: "main" }),
+    );
     expect(respond).toHaveBeenCalledWith(
       true,
       { ok: true, abortedRunId: null, status: "aborted" },
@@ -591,7 +597,7 @@ describe("sessions.abort agent scope", () => {
       sessionKey,
       assertCurrent: expect.any(Function),
     });
-    expect(abortEmbeddedAgentRunMock).not.toHaveBeenCalled();
+    expect(abortOwnedEmbeddedAgentRunMock).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       true,
       { ok: true, abortedRunId: null, status: "aborted" },
@@ -618,7 +624,7 @@ describe("sessions.abort agent scope", () => {
     );
 
     expect(clearSessionLifecycleQueuesMock).not.toHaveBeenCalled();
-    expect(abortEmbeddedAgentRunMock).not.toHaveBeenCalled();
+    expect(abortOwnedEmbeddedAgentRunMock).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       true,
       { ok: true, abortedRunId: null, status: "no-active-run" },
@@ -674,7 +680,7 @@ describe("sessions.abort agent scope", () => {
 
     expectChatAbortParams({ sessionKey: "global", runId: undefined, agentId: "work" });
     expect(clearSessionLifecycleQueuesMock).not.toHaveBeenCalled();
-    expect(abortEmbeddedAgentRunMock).not.toHaveBeenCalled();
+    expect(abortOwnedEmbeddedAgentRunMock).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       true,
       { ok: true, abortedRunId: null, status: "no-active-run" },
