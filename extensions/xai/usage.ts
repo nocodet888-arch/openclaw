@@ -206,7 +206,11 @@ export async function fetchXaiUsage(
     fetchFn,
   );
   if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
+    // Match github-copilot usage / runtime-auth: a capture tee must not delay
+    // the already-known usage failure.
+    if (!response.bodyUsed) {
+      void response.body?.cancel().catch(() => undefined);
+    }
     return buildUsageHttpErrorSnapshot({
       provider: XAI_PROVIDER_ID,
       status: response.status,
