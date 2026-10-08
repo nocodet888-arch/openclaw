@@ -23,6 +23,10 @@ import {
 import { ensureContextWindowCacheLoaded } from "../agents/context.js";
 import { resolveActiveEmbeddedRunSessionId } from "../agents/embedded-agent-runner/active-run-projections.js";
 import {
+  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
+  ACTIVE_EMBEDDED_RUNS,
+} from "../agents/embedded-agent-runner/run-state.js";
+import {
   claimPendingEmbeddedAgentQuestionAnswer,
   queueEmbeddedAgentMessageWithOutcomeAsync,
 } from "../agents/embedded-agent-runner/runs.js";
@@ -51,6 +55,8 @@ import {
   DEFAULT_QUEUE_DROP,
 } from "../auto-reply/reply/queue/state.js";
 import type { QueueSettings } from "../auto-reply/reply/queue/types.js";
+import { resolveActiveReplyOperationForSessionId } from "../auto-reply/reply/reply-run-registry.registry.js";
+import { getAttachedBackend } from "../auto-reply/reply/reply-run-registry.state.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { getRuntimeConfig, registerConfigWriteListener } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
@@ -113,6 +119,7 @@ import {
   agentSessionKeysMatchByRequestKey,
   isIncognitoSessionKey,
   normalizeAgentId,
+  parseAgentSessionKey,
 } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -171,6 +178,50 @@ const embeddedSessionStartupMigrationLog = {
   info: (message: string) => logInfo(message, silentRuntime),
   warn: (message: string) => logWarn(message, silentRuntime),
 };
+
+/**
+ * Owner of the backend that steering for `sessionId` would actually reach.
+ * The selected handle's registration wins; reply metadata counts only when that
+ * operation is attached to the same handle (or no handle exists yet).
+ */
+function resolveSelectedSteerOwnerAgentId(sessionId: string): string | undefined {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+  const registered =
+    registration?.agentId ?? parseAgentSessionKey(registration?.sessionKey)?.agentId;
+  if (registered) {
+    return normalizeAgentId(registered);
+  }
+  const operation = resolveActiveReplyOperationForSessionId(sessionId);
+  if (!operation || (handle && getAttachedBackend(operation) !== handle)) {
+    return undefined;
+  }
+  const replyOwner = operation.agentId ?? parseAgentSessionKey(operation.key)?.agentId;
+  return replyOwner ? normalizeAgentId(replyOwner) : undefined;
+}
+
+/**
+ * Bind local input to the active run owned by `agentId`. `canInject` re-checks
+ * the exact selected handle and its owner immediately before each injection, so
+ * a foreign or replacement run on a shared key cannot inherit this TUI input.
+ */
+function captureLocalSteerTarget(sessionId: string, agentId: string) {
+  const defaultAgentId = resolveDefaultAgentId(getRuntimeConfig());
+  const requestedAgentId = normalizeAgentId(agentId);
+  const ownsSelectedRun = () =>
+    (resolveSelectedSteerOwnerAgentId(sessionId) ?? defaultAgentId) === requestedAgentId;
+  if (!ownsSelectedRun()) {
+    return undefined;
+  }
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+  return {
+    canInject: () =>
+      ACTIVE_EMBEDDED_RUNS.get(sessionId) === handle &&
+      (!handle || ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration) &&
+      ownsSelectedRun(),
+  };
+}
 
 export class EmbeddedTuiBackend implements TuiBackend {
   readonly connection = { url: "local embedded" };
@@ -336,7 +387,12 @@ export class EmbeddedTuiBackend implements TuiBackend {
       const loadOptions = opts.agentId ? { agentId: opts.agentId } : undefined;
       const { cfg, canonicalKey, entry } = loadSessionEntry(opts.sessionKey, loadOptions);
       const activeSessionId = resolveActiveEmbeddedRunSessionId(canonicalKey);
-      if (activeSessionId) {
+      // A shared canonical key (for example `global`) can expose another agent's
+      // active run; local input only reaches the run owned by this agent.
+      const steerTarget = activeSessionId
+        ? captureLocalSteerTarget(activeSessionId, agentId)
+        : undefined;
+      if (activeSessionId && steerTarget?.canInject()) {
         const claimed = await claimPendingEmbeddedAgentQuestionAnswer(
           activeSessionId,
           opts.message,
@@ -351,7 +407,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
         sessionEntry: entry,
       });
       if (queueSettings.mode === "steer") {
-        if (activeSessionId) {
+        if (activeSessionId && steerTarget?.canInject()) {
           const outcome = await queueEmbeddedAgentMessageWithOutcomeAsync(
             activeSessionId,
             opts.message,
