@@ -321,11 +321,9 @@ export function createMattermostClient(params: {
     }
 
     if (discardResponse) {
-      try {
-        await res.body?.cancel();
-      } catch {
-        // Ignore cancellation failures.
-      }
+      // Do not await cancel: teed/debug streams can leave cancel pending forever
+      // and stall typing/reaction/delete discard paths (Google Chat fetchOk / GitHub discardResponse).
+      void res.body?.cancel().catch(() => undefined);
       // SAFETY: The caller declared a no-result mutation and discards the receipt.
       return undefined as T;
     }
