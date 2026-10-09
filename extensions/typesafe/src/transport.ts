@@ -163,7 +163,9 @@ export async function requestEvaluation(params: {
       const response = responseWithRelease(guarded.response, release);
       if (!response.ok) {
         // Error payloads may reflect credentials or supplied state. Never consume or expose them.
-        await response.body?.cancel();
+        // Do not await cancel: wrapBodyStream allSettles the reader cancel, and a hanging
+        // tee must not delay the already-known EvaluationError (cancelUnreadResponseBody void).
+        void response.body?.cancel().catch(() => undefined);
         throw httpError(response);
       }
       const bytes = await readBody(response, signal);

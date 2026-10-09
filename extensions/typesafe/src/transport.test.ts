@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { setImmediate } from "node:timers/promises";
 import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
 import { afterEach, expect, it, vi } from "vitest";
@@ -209,3 +210,84 @@ it.each([
     }
   },
 );
+
+it("throws EvaluationError promptly when error-path body cancel never settles", async () => {
+  let cancelStarted = false;
+  const cancelNeverSettles = new Promise<void>(() => {});
+  mockFetch(
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          cancel() {
+            cancelStarted = true;
+            return cancelNeverSettles;
+          },
+        }),
+        { status: 401 },
+      ),
+  );
+  const error = await requestEvaluation(request).catch((caught: unknown) => caught);
+  expect(error).toMatchObject({ name: "EvaluationError", reason: "authentication" });
+  expect(cancelStarted).toBe(true);
+  console.log(
+    `[typesafe error-path cancel-nofollow proof] cancel_started=true evaluation_error=true`,
+  );
+});
+
+it("returns EvaluationError from real HTTP 401 without awaiting hanging unread cancel", async () => {
+  const socketClosed = Promise.withResolvers<void>();
+  const server = createServer((req, res) => {
+    res.writeHead(401, {
+      "content-type": "application/json",
+      connection: "close",
+    });
+    // Leave the error body unread/hanging so await cancel would stall with a retained tee.
+    res.write('{"error":"unauthorized"');
+    req.socket?.once("close", () => {
+      socketClosed.resolve();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      resolve();
+    });
+  });
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("expected TCP address");
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const returned = Promise.withResolvers<{ ok: true } | { ok: false; error: unknown }>();
+    const evaluation = requestEvaluation({
+      ...request,
+      apiKey: undefined,
+      baseUrl,
+      timeoutMs: 5_000,
+    }).then(
+      () => {
+        returned.resolve({ ok: true });
+      },
+      (error: unknown) => {
+        returned.resolve({ ok: false, error });
+      },
+    );
+    const outcome = await returned.promise;
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toMatchObject({ name: "EvaluationError", reason: "authentication" });
+    }
+    console.log(
+      `[typesafe error-path cancel HTTP transport proof] returned=true evaluation_error=true base=${baseUrl}`,
+    );
+    await evaluation.catch(() => undefined);
+    await socketClosed.promise;
+  } finally {
+    await new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+    });
+  }
+});
