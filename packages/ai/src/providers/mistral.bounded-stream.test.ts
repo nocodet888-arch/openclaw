@@ -41,13 +41,13 @@ async function settleWithin<T>(promise: Promise<T>, label: string): Promise<T> {
 }
 
 describe("Mistral bounded-stream-read real wire proof (loopback http.createServer)", () => {
-  it("caps an oversized body streamed chunked over real wire", async () => {
+  it("caps an oversized pending SSE frame streamed chunked over real wire", async () => {
     const fetcher = createBoundedMistralFetcher(MAX);
     const CHUNK = 1024 * 1024;
-    // Pending writes may retain this buffer, so keep its bytes unchanged.
-    const chunk = Buffer.alloc(CHUNK);
+    // No blank-line frame delimiter: pending budget must fire before TOTAL.
+    const chunk = Buffer.alloc(CHUNK, 0x61);
     const server = http.createServer((req, res) => {
-      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.writeHead(200, { "content-type": "text/event-stream" });
       let sent = 0;
       const tick = setInterval(() => {
         if (sent < 18) {
@@ -70,10 +70,6 @@ describe("Mistral bounded-stream-read real wire proof (loopback http.createServe
     let captured: Error | undefined;
     try {
       const response = await fetcher(`http://127.0.0.1:${port}/`);
-      // Wire framing merges TCP packets, so the reported size at throw time
-      // is between MAX (cap) and TOTAL (cap + last merged packet). Both
-      // bounds prove (a) cap fired (got > MAX) and (b) we did not buffer
-      // beyond the server's full 18 MiB (got < TOTAL).
       try {
         await readAllChunks(response.body);
       } catch (err) {
@@ -81,15 +77,53 @@ describe("Mistral bounded-stream-read real wire proof (loopback http.createServe
       }
       expect(captured).toBeInstanceOf(Error);
       const match = (captured as Error).message.match(
-        /mistral: stream body exceeds \d+ bytes \(got (\d+)\)/,
+        /mistral: stream frame exceeds \d+ bytes \(got (\d+)\)/,
       );
       expect(match).not.toBeNull();
       const got = Number(match?.[1]);
       expect(got).toBeGreaterThan(MAX);
       expect(got).toBeLessThan(TOTAL);
-      // Print to vitest stdout for PR-body real behavior proof capture.
       console.log(
-        `[mistral bounded-stream proof] oversized path: cap=${MAX} reported=${got} server_total=${TOTAL}`,
+        `[mistral bounded-stream proof] oversized frame path: cap=${MAX} reported=${got} server_total=${TOTAL}`,
+      );
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it("accepts over 16 MiB of complete small SSE frames on real wire", async () => {
+    const fetcher = createBoundedMistralFetcher(MAX);
+    const pad = "x".repeat(256 * 1024);
+    const frame = Buffer.from(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: pad } }] })}\n\n`,
+      "utf8",
+    );
+    const frames = Math.ceil((20 * 1024 * 1024) / frame.byteLength);
+    expect(frames * frame.byteLength).toBeGreaterThan(MAX);
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (let i = 0; i < frames; i++) {
+        res.write(frame);
+      }
+      res.end("data: [DONE]\n\n");
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        resolve();
+      });
+    });
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const response = await fetcher(`http://127.0.0.1:${port}/`);
+      const { total } = await readAllChunks(response.body);
+      expect(total).toBeGreaterThan(MAX);
+      console.log(
+        `[mistral bounded-stream proof] long multi-frame path: cap=${MAX} returned=${total} frames=${frames}`,
       );
     } finally {
       await new Promise<void>((resolve) => {
@@ -122,6 +156,151 @@ describe("Mistral bounded-stream-read real wire proof (loopback http.createServe
       expect(total).toBe(Buffer.byteLength(bodyText, "utf8"));
       console.log(
         `[mistral bounded-stream proof] normal path: cap=${MAX} returned=${total} body=${JSON.stringify(bodyText)}`,
+      );
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it("keeps cumulative bounds for whole-body error responses with blank-line-like chunks", async () => {
+    const fetcher = createBoundedMistralFetcher(MAX);
+    // Repeated blank-line-like chunks must NOT reset a cumulative whole-body budget.
+    const unit = Buffer.from("x\n\n");
+    const chunk = Buffer.alloc(1024 * 1024);
+    for (let i = 0; i < chunk.byteLength; i += unit.byteLength) {
+      unit.copy(chunk, i, 0, Math.min(unit.byteLength, chunk.byteLength - i));
+    }
+    const server = http.createServer((_req, res) => {
+      res.writeHead(500, { "content-type": "application/json" });
+      let sent = 0;
+      const tick = setInterval(() => {
+        if (sent < 18) {
+          res.write(chunk);
+          sent++;
+        } else {
+          clearInterval(tick);
+          res.end();
+        }
+      }, 1);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        resolve();
+      });
+    });
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const response = await fetcher(`http://127.0.0.1:${port}/`);
+      let captured: Error | undefined;
+      try {
+        await readAllChunks(response.body);
+      } catch (err) {
+        captured = err as Error;
+      }
+      expect(captured).toBeInstanceOf(Error);
+      expect(captured?.message).toMatch(/mistral: stream body exceeds/);
+      console.log(
+        `[mistral bounded-stream proof] whole-body cumulative path: cap=${MAX} message=${captured?.message}`,
+      );
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it("releases pending budget on CR-CR delimited SSE frames over 16 MiB", async () => {
+    const fetcher = createBoundedMistralFetcher(MAX);
+    const pad = "x".repeat(256 * 1024);
+    const frame = Buffer.from(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: pad } }] })}\r\r`,
+      "utf8",
+    );
+    const frames = Math.ceil((20 * 1024 * 1024) / frame.byteLength);
+    expect(frames * frame.byteLength).toBeGreaterThan(MAX);
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (let i = 0; i < frames; i++) {
+        res.write(frame);
+      }
+      res.end("data: [DONE]\r\r");
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        resolve();
+      });
+    });
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const response = await fetcher(`http://127.0.0.1:${port}/`);
+      const { total } = await readAllChunks(response.body);
+      expect(total).toBeGreaterThan(MAX);
+      console.log(
+        `[mistral bounded-stream proof] CR-CR multi-frame path: cap=${MAX} returned=${total} frames=${frames}`,
+      );
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it("counts carriage returns toward the pending SSE frame budget", async () => {
+    const fetcher = createBoundedMistralFetcher(MAX);
+    // Alternating a\r has no blank-line boundary; both bytes must count.
+    const unit = Buffer.from("a\r");
+    const chunk = Buffer.alloc(1024 * 1024);
+    for (let i = 0; i < chunk.byteLength; i += unit.byteLength) {
+      unit.copy(chunk, i, 0, Math.min(unit.byteLength, chunk.byteLength - i));
+    }
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      let sent = 0;
+      const tick = setInterval(() => {
+        if (sent < 18) {
+          res.write(chunk);
+          sent++;
+        } else {
+          clearInterval(tick);
+          res.end();
+        }
+      }, 1);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        resolve();
+      });
+    });
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const response = await fetcher(`http://127.0.0.1:${port}/`);
+      let captured: Error | undefined;
+      try {
+        await readAllChunks(response.body);
+      } catch (err) {
+        captured = err as Error;
+      }
+      expect(captured).toBeInstanceOf(Error);
+      const match = (captured as Error).message.match(
+        /mistral: stream frame exceeds \d+ bytes \(got (\d+)\)/,
+      );
+      expect(match).not.toBeNull();
+      const got = Number(match?.[1]);
+      expect(got).toBeGreaterThan(MAX);
+      expect(got).toBeLessThanOrEqual(MAX + 1024 * 1024);
+      console.log(
+        `[mistral bounded-stream proof] CR-counted pending path: cap=${MAX} reported=${got}`,
       );
     } finally {
       await new Promise<void>((resolve) => {

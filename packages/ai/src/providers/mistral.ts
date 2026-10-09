@@ -61,6 +61,70 @@ const MISTRAL_TOOL_CALL_ID_LENGTH = 9;
 // Bound compatible endpoints as well as the first-party streaming API.
 const MISTRAL_STREAM_BODY_MAX_BYTES = 16 * 1024 * 1024;
 
+/**
+ * Bound one pending SSE frame (SDK blank-line delimiters), not aggregate stream bytes.
+ * Sibling of #166853: long healthy turns may exceed 16 MiB total; one oversized
+ * retained frame still fails. Cancellation must not await upstream settle.
+ *
+ * Delimiters match @mistralai/mistralai EventStream (`\n\n`, `\r\r`, `\n\r`, `\r\n\r\n`, …)
+ * including boundaries split across reads. Every retained byte (including CR) counts.
+ */
+function createPendingSseFrameByteGuard(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  maxBytes: number,
+): {
+  read(): Promise<ReadableStreamReadResult<Uint8Array>>;
+  cancel(reason?: unknown): Promise<void>;
+} {
+  if (!Number.isFinite(maxBytes) || maxBytes < 0) {
+    throw new RangeError(`maxBytes must be a non-negative finite number: ${maxBytes}`);
+  }
+  let pending = 0;
+  let lineEmpty = true;
+  let skipLf = false;
+  let cancelled = false;
+  const cancelBestEffort = (reason?: unknown): void => {
+    void reader.cancel(reason).catch(() => undefined);
+  };
+  const account = (value: Uint8Array): void => {
+    for (let i = 0; i < value.byteLength; i++) {
+      const byte = value[i]!;
+      const crlf = skipLf && byte === 10;
+      skipLf = byte === 13;
+      const lineEnding = byte === 10 || byte === 13;
+      const boundary = !crlf && lineEnding && lineEmpty;
+      lineEmpty = lineEnding;
+      pending += 1;
+      if (pending > maxBytes) {
+        cancelled = true;
+        const err = new Error(`mistral: stream frame exceeds ${maxBytes} bytes (got ${pending})`);
+        cancelBestEffort(err);
+        throw err;
+      }
+      if (boundary) {
+        pending = 0;
+      }
+    }
+  };
+  return {
+    read: async () => {
+      if (cancelled) {
+        return { done: true, value: undefined };
+      }
+      const result = await reader.read();
+      if (result.done) {
+        return result;
+      }
+      account(result.value ?? new Uint8Array());
+      return result;
+    },
+    cancel: async (reason?: unknown) => {
+      cancelled = true;
+      cancelBestEffort(reason);
+    },
+  };
+}
+
 /** Cap the SDK's response reader while preserving bodyless error responses. */
 export function createBoundedMistralFetcher(
   maxBytes: number = MISTRAL_STREAM_BODY_MAX_BYTES,
@@ -72,11 +136,16 @@ export function createBoundedMistralFetcher(
       return response;
     }
     const reader = response.body.getReader();
-    const guard = createSseByteGuard(reader, {
-      maxBytes,
-      onOverflow: ({ size, maxBytes: cap }) =>
-        new Error(`mistral: stream body exceeds ${cap} bytes (got ${size})`),
-    });
+    const contentType = response.headers.get("content-type") ?? "";
+    const isSse = contentType.toLowerCase().includes("text/event-stream");
+    // Frame accounting only for SSE; whole-body / error responses keep cumulative protection.
+    const guard = isSse
+      ? createPendingSseFrameByteGuard(reader, maxBytes)
+      : createSseByteGuard(reader, {
+          maxBytes,
+          onOverflow: ({ size, maxBytes: cap }) =>
+            new Error(`mistral: stream body exceeds ${cap} bytes (got ${size})`),
+        });
     const guardedStream = new ReadableStream<Uint8Array>({
       async pull(controller) {
         const { done, value } = await guard.read();
