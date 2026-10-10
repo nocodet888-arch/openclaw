@@ -40,3 +40,49 @@ it("focuses each pending decision once and returns focus after keyboard completi
     await waitForSolid(() => expect(mounted.queryByRole("alertdialog")).toBeNull());
   }
 });
+
+function hasLoneUtf16Surrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        return true;
+      }
+      index += 1;
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+it("keeps confirm preview valid when the 200-unit boundary bisects an emoji", async () => {
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const confirmation = createMcpAppConfirm();
+  const mounted = mountSolid(() => <McpAppConfirmation confirmation={confirmation} />);
+  const text = `${"a".repeat(199)}😀`;
+  expect(text.length).toBe(201);
+  expect(hasLoneUtf16Surrogate(text.slice(0, 200))).toBe(true);
+  const decision = confirmation.request({
+    frame,
+    title: "Unicode preview",
+    text,
+    kind: "message",
+    isCurrent: () => true,
+  });
+  await waitForSolid(() => expect(mounted.getByRole("alertdialog")).toBeTruthy());
+  const preview = mounted.container.querySelector(".mcp-app-confirm__preview");
+  expect(preview).not.toBeNull();
+  const shown = (preview!.textContent ?? "").trim();
+  expect(hasLoneUtf16Surrogate(shown)).toBe(false);
+  expect(shown.includes("\uFFFD")).toBe(false);
+  expect(shown.endsWith("…")).toBe(true);
+  expect(shown.length).toBeLessThanOrEqual(201);
+  expect(preview!.getAttribute("title")).toBe(text);
+  confirmation.cancel();
+  await expect(decision).resolves.toBe(false);
+});
