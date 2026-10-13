@@ -73,7 +73,8 @@ export function readNewSessionSubmissionAccess(options: {
   const { gateway, place, pendingPlacement, hasInitialTurn, createParams } = options;
   const pendingPlacementActive = Boolean(pendingPlacement.sessionKey);
   const target = resolveDraftSessionPlacement(pendingPlacement, place);
-  const remoteProject = !target && !hasInitialTurn ? place.browser.remoteProject : null;
+  const remoteProject =
+    !place.hostedEnvironment && !target && !hasInitialTurn ? place.browser.remoteProject : null;
   if (!pendingPlacementActive && remoteProject && !remoteProject.projectId) {
     const projectAccess = readSessionMethodAccess(gateway, {
       method: "projects.add",
@@ -173,8 +174,20 @@ export function resolveNewSessionSubmitBlock(
   ) {
     return { gate: "preference-restore", reason: t("newSession.restoringPreferences") };
   }
+  const agents = snapshot.context?.agents.state;
+  const rosterBlock = (): NewSessionSubmitBlock => ({
+    gate: "agents",
+    reason: t(
+      agents?.agentsError
+        ? "newSession.agentDefaultsUnavailable"
+        : "newSession.loadingAgentDefaults",
+    ),
+  });
   if (kind === "session" && !gateway.placementPolicyReady) {
-    return { gate: "cloud", reason: t("newSession.placementNotReady") };
+    // The policy arrives with the agent roster; a loaded roster leaves only a runner to wait for.
+    return agents?.agentsList
+      ? { gate: "cloud", reason: t("newSession.placementNotReady") }
+      : rosterBlock();
   }
   if (
     kind === "session" &&
@@ -245,6 +258,9 @@ export function resolveNewSessionSubmitBlock(
       };
     }
   }
+  if (place.suggestedCloudProfile.pending) {
+    return { gate: "cloud", reason: t("newSession.placementNotReady") };
+  }
   if (place.folderSubmissionBlocked()) {
     return { gate: "folder", reason: t("newSession.checkingPlace") };
   }
@@ -263,15 +279,8 @@ export function resolveNewSessionSubmitBlock(
       ? emptyDraftBlock(draft, kind, pendingPlacementActive)
       : { gate: "placement-recovery", reason: t("newSession.placementNotReady") };
   }
-  if (!snapshot.context?.agents.state.agentsList) {
-    return {
-      gate: "agents",
-      reason: t(
-        snapshot.context?.agents.state.agentsError
-          ? "newSession.agentDefaultsUnavailable"
-          : "newSession.loadingAgentDefaults",
-      ),
-    };
+  if (!agents?.agentsList) {
+    return rosterBlock();
   }
   const placementTarget = resolveDraftSessionPlacement(draft.pendingPlacement, place);
   const cloudProfileId = placementTarget?.kind === "profile" ? placementTarget.profileId : "";

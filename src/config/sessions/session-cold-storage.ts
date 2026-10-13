@@ -12,7 +12,6 @@ import {
   retainOpenClawAgentDatabaseReadOnly,
   withOpenClawAgentDatabaseReadOnly,
 } from "../../state/openclaw-agent-db-readonly.js";
-import { prepareOpenClawAgentDatabaseRegistrySnapshotRead } from "../../state/openclaw-agent-db-registry-listing.js";
 import {
   resolveOpenClawAgentSqlitePath,
   type OpenClawAgentDatabaseOptions,
@@ -49,6 +48,7 @@ import { withSqliteMutationWorkerLifetime } from "./session-accessor.sqlite-work
 import type { SessionColdRestorationGuard } from "./session-cold-storage-guard.types.js";
 import type { SessionColdReadPreparation } from "./session-cold-storage-read.js";
 import { readSessionColdTranscript } from "./session-cold-storage-state.js";
+import { prepareSessionColdStorageTargets } from "./session-cold-storage-targets.js";
 import type {
   SessionColdMutationPlan,
   SessionColdBatchPrepared,
@@ -64,19 +64,14 @@ import type {
 import { reclaimSqliteFreePages } from "./session-history-archive-pruning.js";
 import { captureIncognitoSessionSource } from "./session-incognito-binding.js";
 import type { SessionSourceValidation } from "./session-source-authority.js";
-import { prepareSessionStoreTargetInventory } from "./session-store-target-inventory.js";
 import { publishUnchangedSessionTranscriptReceipts } from "./session-transcript-authority.js";
-import {
-  projectionLane,
-  withSessionHistoryWorkerReadCandidates,
-} from "./session-transcript-worker-resources.js";
+import { projectionLane } from "./session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import {
   parseTranscriptAppendRefusal,
   SessionTranscriptWriterClaimReboundError,
 } from "./session-transcript-writer-claim-error.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
-import { listConfiguredSessionStoreAgentIds } from "./targets.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
 const operations = new Map<string, StoreWriterQueue>();
@@ -87,8 +82,6 @@ const restoredUntil = new Map<string, number>();
 const RESTORE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const MAX_TRANSCRIPTS_PER_PASS = 128;
 const MAX_BATCH_BYTES = 64 * 1024 * 1024;
-
-export type { SessionColdMaintenanceResult } from "./session-cold-storage.types.js";
 
 function workerDatabaseOptions(options: OpenClawAgentDatabaseOptions) {
   const sourceEnv = options.env ?? process.env;
@@ -263,19 +256,17 @@ async function runColdMutation(
               assertCurrent: assertAllowed,
             }),
           );
-        }
-        if (
-          plan.kind === "cold-restore" &&
+        } else if (
           completed.result.restored &&
           completed.result.sessionKey !== undefined &&
           retained?.found &&
           retained.claim.isCurrent()
         ) {
           assertAllowed();
-          // Restoration commits transcript rows only; a facts-less change would revoke sharing.
           sessionChanges.emit({
             storePath: retained.database.path,
             sessionKey: completed.result.sessionKey,
+            scope: "transcript",
             facts: { kind: "unchanged" },
           });
         }
@@ -357,12 +348,6 @@ async function archiveSessionColdBatch(
       if (!batch) {
         throw new Error("Cold archive worker returned no prepared batch");
       }
-      const empty: SessionColdBatchResult = {
-        archivedTranscripts: 0,
-        externalizedTranscripts: 0,
-        envelopeBytes: 0,
-        attemptedTranscripts: 0,
-      };
       for (const sessionId of batch.oversizedSessionIds) {
         oversizedUntil.set(`${storePath}\0${sessionId}`, Date.now() + RESTORE_COOLDOWN_MS);
         log.warn("Transcript remains in SQLite because its archive exceeds the 64 MiB limit", {
@@ -394,11 +379,7 @@ async function archiveSessionColdBatch(
                     ...iterateProjectedAgentRunSessionKeys(buildProjectedAgentRunIndex()),
                   ].some((identity) =>
                     batch.protectionKeys.includes(normalizeStoreSessionKey(identity)),
-                  )
-                ) {
-                  throw new Error("Transcript became active; cold archival was canceled");
-                }
-                if (
+                  ) ||
                   included.some(
                     (id) =>
                       admissions?.has(id) ||
@@ -414,7 +395,7 @@ async function archiveSessionColdBatch(
                 { kind: "cold-maintain", databaseOptions: input.databaseOptions },
                 assertCurrent,
               )
-            : empty;
+            : { archivedTranscripts: 0, externalizedTranscripts: 0 };
       assertCurrent();
       return {
         archivedTranscripts: result.archivedTranscripts,
@@ -613,65 +594,6 @@ export async function restoreSessionColdTranscript(
   });
 }
 
-async function configuredStores(config: OpenClawConfig, assertCallerCurrent?: () => void) {
-  const prepared = prepareSessionStoreTargetInventory(
-    config,
-    listConfiguredSessionStoreAgentIds(config),
-    process.env,
-    "configured",
-  );
-  const { env, candidates } = prepared;
-  const context = captureOpenClawStateReadWorkerContext({ env });
-  const registryRead = prepareOpenClawAgentDatabaseRegistrySnapshotRead({ env });
-  const source = createOpenClawAgentDatabasePathMatcher();
-  for (const candidate of candidates) {
-    source(candidate.path, candidate.path);
-  }
-  const assertCurrent = () => {
-    assertCallerCurrent?.();
-    context.maintenanceScope?.assertAdmission();
-    context.admission.assertCurrent();
-    if (!source.isCurrent()) {
-      throw new Error("Session store changed during cold maintenance");
-    }
-  };
-  const stores = await withSessionHistoryWorkerReadCandidates(candidates, async (discovery) => {
-    const registry = await registryRead.read();
-    assertCurrent();
-    registryRead.assertCurrent();
-    discovery.assertCurrent();
-    const inventory = await discovery.readTargetInventory({
-      ...prepared,
-      registeredDatabases:
-        registry.result.status === "available"
-          ? registry.result.entries
-          : { status: "unavailable" },
-    });
-    assertCurrent();
-    registryRead.assertCurrent();
-    discovery.assertCurrent();
-    if (inventory.kind === "session-target-registry-required") {
-      throw new Error("Cold maintenance did not receive its registry snapshot");
-    }
-    return inventory.agents.flatMap(({ result, reads }) =>
-      result.available
-        ? result.targets.map((target, index) => ({
-            databaseOptions: {
-              ...reads[index]!.database,
-              // Archive paths and restore cooldowns retain the configured SQLite locator.
-              path: reads[index]!.target.storePath,
-              env,
-            },
-            ownerStorePath: target.storePath,
-          }))
-        : [],
-    );
-  });
-  assertCurrent();
-  registryRead.assertCurrent();
-  return { stores, assertCurrent };
-}
-
 export async function runSessionColdStorageMaintenance(params: {
   config: OpenClawConfig;
   assertCurrent?: () => void;
@@ -686,7 +608,10 @@ export async function runSessionColdStorageMaintenance(params: {
     return result;
   }
   const beforeMs = Date.now() - (config.afterDays ?? 30) * 24 * 60 * 60 * 1000;
-  const { stores, assertCurrent } = await configuredStores(params.config, params.assertCurrent);
+  const { stores, assertCurrent } = await prepareSessionColdStorageTargets(
+    params.config,
+    params.assertCurrent,
+  );
   assertCurrent();
   const start = stores.length ? nextStore % stores.length : 0;
   nextStore = start + 1;

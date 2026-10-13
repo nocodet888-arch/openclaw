@@ -1,5 +1,5 @@
 import { createRouter } from "@openclaw/uirouter";
-import { vi } from "vitest";
+import { onTestFinished, vi } from "vitest";
 import type { RouteId } from "../../app-routes.ts";
 import { createChatSubmissions } from "../../app/chat-submissions.ts";
 import type { ApplicationContext } from "../../app/context.ts";
@@ -7,6 +7,7 @@ import { registerChatAttachmentPayload } from "../chat/attachment-payload-store.
 import { DraftGatewayState } from "./draft-gateway-state.ts";
 import { DraftPlaceBrowser } from "./draft-place-browser.ts";
 import { DraftPlaceState } from "./draft-place-state.ts";
+import type { DraftSubmissionCallbacks } from "./draft-submission-contract.ts";
 import { DraftSubmissionFlow } from "./draft-submission-flow.ts";
 import type { NewSessionRouteData } from "./location.ts";
 import { TestReactiveControllerHost } from "./reactive-controller-host.test-support.ts";
@@ -14,6 +15,7 @@ import { TestReactiveControllerHost } from "./reactive-controller-host.test-supp
 type FixtureOptions = {
   gateway?: ApplicationContext["gateway"];
   takePreparedTitle?: () => string | undefined;
+  retainForHandoff?: DraftSubmissionCallbacks["retainForHandoff"];
   phase?: "connected" | "connecting";
   agents?: unknown[];
   methods?: string[];
@@ -30,16 +32,8 @@ export function createDraftFixture(options: FixtureOptions = {}) {
     if (method === "models.list") {
       return options.modelCatalog ? options.modelCatalog(params) : Promise.resolve({ models: [] });
     }
-    if (
-      method === "agents.list" &&
-      params &&
-      typeof params === "object" &&
-      "includeSessionPlacement" in params &&
-      params.includeSessionPlacement === true
-    ) {
-      return options.placementPolicy
-        ? options.placementPolicy()
-        : Promise.resolve({ sessionPlacement: {} });
+    if (method === "agents.list" && options.placementPolicy) {
+      return options.placementPolicy();
     }
     if (options.request) {
       return options.request(method, params);
@@ -51,7 +45,35 @@ export function createDraftFixture(options: FixtureOptions = {}) {
   const router = createRouter<RouteId, ApplicationContext>({
     routes: [{ id: "chat", path: "/chat", component: () => ({}) }],
   });
+  const lifetime = new AbortController();
+  onTestFinished(() => lifetime.abort());
+  const roster = {
+    defaultId: "main",
+    agents: options.agents ?? [
+      {
+        id: "main",
+        workspace: "/workspace",
+        workspaceGit: false,
+        model: { primary: "openai/gpt-5.6-luna" },
+      },
+    ],
+  };
+  // The roster carries the placement policy; a scripted policy arrives with a roster refresh.
+  const agents = {
+    state: {
+      agentsList: options.placementPolicy ? roster : { ...roster, sessionPlacement: {} },
+    },
+    refreshList: async () => {
+      // A failed refresh publishes no policy, like the roster owner.
+      const policy = await options.placementPolicy?.().catch(() => undefined);
+      if (policy) {
+        agents.state.agentsList = Object.assign({}, roster, policy);
+      }
+      return agents.state.agentsList;
+    },
+  };
   const context = {
+    lifecycleAbortSignal: lifetime.signal,
     router,
     gateway: options.gateway ?? {
       subscribe: () => () => undefined,
@@ -77,21 +99,7 @@ export function createDraftFixture(options: FixtureOptions = {}) {
       },
       setSessionKey: vi.fn(),
     },
-    agents: {
-      state: {
-        agentsList: {
-          defaultId: "main",
-          agents: options.agents ?? [
-            {
-              id: "main",
-              workspace: "/workspace",
-              workspaceGit: false,
-              model: { primary: "openai/gpt-5.6-luna" },
-            },
-          ],
-        },
-      },
-    },
+    agents,
     sessions: {
       state: { result: null },
       createResult: vi.fn(),
@@ -140,6 +148,7 @@ export function createDraftFixture(options: FixtureOptions = {}) {
       runtimeId: place?.devicePlacementRuntime()?.id ?? "",
     }),
     {
+      readAgents: () => context.agents,
       requestUpdate: vi.fn(),
       updateComplete: () => Promise.resolve(),
       onInvalidate: vi.fn(),
@@ -153,11 +162,6 @@ export function createDraftFixture(options: FixtureOptions = {}) {
         place?.adoptAgentDefaults({ preserveSelectedAgent: true, preserveSelectedFolder: true }),
     },
   );
-  // Synchronous unit fixtures that omit catalog discovery model an already-loaded
-  // Gateway with no placement policy. Catalog tests exercise the real async owner.
-  if (!options.methods?.includes("environments.list")) {
-    vi.spyOn(gateway, "placementPolicyReady", "get").mockReturnValue(true);
-  }
   const browser = new DraftPlaceBrowser(
     host,
     gateway,
@@ -195,7 +199,12 @@ export function createDraftFixture(options: FixtureOptions = {}) {
     gateway,
     place,
     () => ({ context, data: options.data, isConnected: phase === "connected" }),
-    { requestUpdate, closeTransientUi: vi.fn(), takePreparedTitle: options.takePreparedTitle },
+    {
+      requestUpdate,
+      closeTransientUi: vi.fn(),
+      takePreparedTitle: options.takePreparedTitle,
+      retainForHandoff: options.retainForHandoff,
+    },
   );
   gateway.synchronize(context.gateway);
   place.setAgentsHydrated(true);

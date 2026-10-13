@@ -111,6 +111,8 @@ export function buildGatewaySessionSnapshot(params: {
     spawnedWorkspaceDir: sessionRow.spawnedWorkspaceDir,
     spawnedCwd: sessionRow.spawnedCwd,
     permissionMode: sessionRow.permissionMode ?? null,
+    communication: sessionRow.communication ?? null,
+    effectiveCommunication: sessionRow.effectiveCommunication,
     permissionModePending: sessionRow.permissionModePending ?? false,
     ...(sessionRow.permissionMode !== undefined && sessionRow.sessionRoot !== undefined
       ? { sessionRoot: sessionRow.sessionRoot }
@@ -150,6 +152,7 @@ export function buildGatewaySessionSnapshot(params: {
     restartRecoveryStatus: sessionRow.restartRecoveryStatus ?? null,
     inputTokens: sessionRow.inputTokens,
     outputTokens: sessionRow.outputTokens,
+    usageReport: sessionRow.usageReport,
     lastChannel: sessionRow.lastChannel,
     lastTo: sessionRow.lastTo,
     lastAccountId: sessionRow.lastAccountId,
