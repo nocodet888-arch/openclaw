@@ -9,26 +9,6 @@ import { parseVaultSecretId } from "../vault-secret-id.js";
 
 const VAULT_PROVIDER_ALIAS = "vault";
 
-function invalidVaultCliArgument(message: string): Error & { code: string; exitCode: number } {
-  // Commander parse-exit so run-main surfaces the message instead of the generic
-  // "The CLI command failed." title (same contract as memory-wiki / workboard CLIs).
-  console.error(message);
-  return Object.assign(new Error(message), {
-    name: "InvalidArgumentError",
-    code: "commander.invalidArgument",
-    exitCode: 1,
-  });
-}
-
-function normalizeVaultSecretId(label: string, value: string): string {
-  try {
-    parseVaultSecretId(value);
-    return value;
-  } catch {
-    throw invalidVaultCliArgument(`Invalid ${label} Vault secret id: ${value}`);
-  }
-}
-
 const vaultSecretRefSetupCli = createPluginSecretRefSetupCli({
   productName: "Vault",
   secretIdLabel: "Vault secret id",
@@ -38,7 +18,10 @@ const vaultSecretRefSetupCli = createPluginSecretRefSetupCli({
     pluginId: "vault",
     integrationId: "vault",
   },
-  normalizeSecretId: normalizeVaultSecretId,
+  normalizeSecretId: (_label, value) => {
+    parseVaultSecretId(value);
+    return value;
+  },
   defaultPlanPath: () =>
     path.join(resolvePreferredOpenClawTmpDir(), `openclaw-vault-secrets-${process.pid}.json`),
 });
