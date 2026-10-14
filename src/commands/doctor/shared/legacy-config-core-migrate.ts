@@ -68,6 +68,25 @@ function repairInvalidHeartbeatActiveHours(cfg: OpenClawConfig, changes: string[
   repairAgentRoster(cfg, (agent, path) => repairHeartbeat(agent.heartbeat, `${path}.heartbeat`));
 }
 
+/** Saved blank/whitespace every was accepted as disable; map to explicit "0m" before schema rejects. */
+function repairBlankHeartbeatEvery(cfg: OpenClawConfig, changes: string[]): void {
+  const repairHeartbeat = (heartbeat: unknown, path: string) => {
+    if (!isRecord(heartbeat) || !Object.hasOwn(heartbeat, "every")) {
+      return;
+    }
+    const every = heartbeat.every;
+    if (typeof every !== "string" || every.trim() !== "") {
+      return;
+    }
+    heartbeat.every = "0m";
+    changes.push(
+      `Normalized blank ${path}.every to "0m" (explicit disable); recurring heartbeats stay off.`,
+    );
+  };
+  repairHeartbeat(cfg.agents?.defaults?.heartbeat, "agents.defaults.heartbeat");
+  repairAgentRoster(cfg, (agent, path) => repairHeartbeat(agent.heartbeat, `${path}.heartbeat`));
+}
+
 function repairNullAgentWorkspaces(cfg: OpenClawConfig, changes: string[]): void {
   let repaired = 0;
   repairAgentRoster(cfg, (agent) => {
@@ -143,6 +162,7 @@ export function normalizeCompatibilityConfigValues(
   }
   normalizeLegacyOpenAICodexModelsAddMetadata(next, changes);
   repairInvalidHeartbeatActiveHours(next, changes);
+  repairBlankHeartbeatEvery(next, changes);
   repairNullAgentWorkspaces(next, changes);
   next = migrateLegacyCommandOwners(next, changes);
   next = pruneBindingsForMissingAgents(next, changes);
