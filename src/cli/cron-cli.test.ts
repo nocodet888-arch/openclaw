@@ -796,6 +796,7 @@ it("rejects exact mode for stored non-cron schedules", async () => {
 });
 
 it.each([
+  [[...AGENT_ADD, "--tools", "  "], "--tools must not be blank"],
   [[...AGENT_ADD, "--script", "   "], "--script must not be blank"],
   [[...AGENT_ADD, "--webhook", "not-a-url"], "--webhook must be a valid http(s) URL"],
   [

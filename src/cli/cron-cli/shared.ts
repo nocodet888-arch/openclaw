@@ -441,7 +441,7 @@ export function parseCronStaggerMs(params: {
   return parsed;
 }
 
-export function parseCronStringList(input: unknown): string[] | undefined {
+export function parseCronStringList(input: unknown, flag = "value"): string[] | undefined {
   if (input === undefined) {
     return undefined;
   }
@@ -450,7 +450,16 @@ export function parseCronStringList(input: unknown): string[] | undefined {
     : typeof input === "string"
       ? input
       : "";
-  return raw.split(/[,\s]+/u).filter(Boolean);
+  const list = raw.split(/[,\s]+/u).filter(Boolean);
+  // Documented empty override: --tools "" / --fallbacks "" persist []. Whitespace-only
+  // is never intentional and would silently strip grants the same way — reject it.
+  if (list.length === 0) {
+    if (typeof input === "string" && input.length > 0) {
+      throw new CronCliError(`${flag} must not be blank`);
+    }
+    return [];
+  }
+  return list;
 }
 
 const INVALID_CRON_TIMEZONE_MESSAGE =

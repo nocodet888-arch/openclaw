@@ -27,6 +27,7 @@ import {
   getCronChannelOptions,
   handleCronCliError,
   parseCronIntegerOption,
+  parseCronStringList,
   parseCronStringOption,
   warnIfCronSchedulerDisabled,
   requireCronJobId,
@@ -112,6 +113,10 @@ export function registerCronEditCommand(cron: Command) {
           const id = requireCronJobId(idArg);
           if (opts.clearTools && opts.tools !== undefined) {
             throw new CronCliError("Use --tools or --clear-tools, not both");
+          }
+          if (opts.tools !== undefined) {
+            // Reject blank --tools before Gateway access (same fail-closed as --script).
+            parseCronStringList(opts.tools, "--tools");
           }
           if (typeof opts.script === "string" && !readNonBlankString(opts.script)) {
             throw new CronCliError("--script must not be blank");

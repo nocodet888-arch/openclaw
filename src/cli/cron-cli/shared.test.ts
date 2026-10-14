@@ -536,6 +536,14 @@ describe("parseCronStringList", () => {
   ])("parses $input", ({ input, expected }) => {
     expect(parseCronStringList(input)).toEqual(expected);
   });
+
+  it("keeps explicit empty lists and rejects whitespace-only", () => {
+    expect(parseCronStringList("", "--tools")).toEqual([]);
+    expect(() => parseCronStringList("  ,  ", "--fallbacks")).toThrow(
+      "--fallbacks must not be blank",
+    );
+    expect(() => parseCronStringList("   ", "--tools")).toThrow("--tools must not be blank");
+  });
 });
 
 describe("coerceCronDeliveryPreviews", () => {
