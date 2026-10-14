@@ -3,6 +3,7 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeOptionalString,
+  readNonBlankString,
   readStringValue,
   resolvePrimaryStringValue,
 } from "@openclaw/normalization-core/string-coerce";
@@ -17,7 +18,7 @@ import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import { isDeeplyFrozenPlainData } from "../shared/immutable-data.js";
-import { resolveUserPath } from "../utils.js";
+import { resolveUserPath, resolveUserPathLiteral } from "../utils.js";
 import { registerResolvedAgentDir } from "./agent-dir-registry.js";
 import {
   hasAgentRosterProperty,
@@ -464,21 +465,21 @@ export function resolveAgentWorkspaceDir(
   env: NodeJS.ProcessEnv = process.env,
 ) {
   const id = normalizeAgentId(agentId);
-  const configured = resolveAgentConfig(cfg, id)?.workspace?.trim();
+  const configured = readNonBlankString(resolveAgentConfig(cfg, id)?.workspace);
   if (configured) {
-    return stripNullBytes(resolveUserPath(configured, env));
+    return stripNullBytes(resolveUserPathLiteral(configured, env));
   }
   // Read-time migration removes default:true before write-time workspace pinning can run.
   const inheritedWorkspaceAgentId = tryResolveLegacyDataOwnerAgentId(cfg);
-  const fallback = cfg.agents?.defaults?.workspace?.trim();
+  const fallback = readNonBlankString(cfg.agents?.defaults?.workspace);
   if (inheritedWorkspaceAgentId && id === inheritedWorkspaceAgentId) {
     if (fallback) {
-      return stripNullBytes(resolveUserPath(fallback, env));
+      return stripNullBytes(resolveUserPathLiteral(fallback, env));
     }
     return stripNullBytes(resolveDefaultAgentWorkspaceDir(env));
   }
   if (fallback) {
-    return stripNullBytes(path.join(resolveUserPath(fallback, env), id));
+    return stripNullBytes(path.join(resolveUserPathLiteral(fallback, env), id));
   }
   const stateDir = resolveStateDir(env);
   return stripNullBytes(path.join(stateDir, `workspace-${id}`));
@@ -532,7 +533,7 @@ export function resolveAgentWorkspaceProvisioning(
   }
   const implicitDir = resolveAgentWorkspaceDir(cfg, id);
   const workspaceDir = invocation?.workspaceDir?.trim()
-    ? resolveUserPath(invocation.workspaceDir)
+    ? resolveUserPathLiteral(invocation.workspaceDir)
     : implicitDir;
   // A provisioned dir that differs from the config-resolved implicit workspace
   // is an explicit selection (for example a spawned-context override).
@@ -567,8 +568,8 @@ export function tryResolveConfiguredAgentWorkspaceDir(
   if (inheritedWorkspaceAgentId) {
     return resolveAgentWorkspaceDir(cfg, inheritedWorkspaceAgentId, env);
   }
-  const configured = cfg.agents?.defaults?.workspace?.trim();
-  return configured ? stripNullBytes(resolveUserPath(configured, env)) : undefined;
+  const configured = readNonBlankString(cfg.agents?.defaults?.workspace);
+  return configured ? stripNullBytes(resolveUserPathLiteral(configured, env)) : undefined;
 }
 
 type AgentDirResolutionEnv = { env?: NodeJS.ProcessEnv; homedir?: () => string };
@@ -580,10 +581,10 @@ export function resolveEffectiveAgentDir(
   deps?: AgentDirResolutionEnv,
 ): string {
   const id = normalizeAgentId(agentId);
-  const configured = resolveAgentConfig(cfg, id)?.agentDir?.trim();
+  const configured = readNonBlankString(resolveAgentConfig(cfg, id)?.agentDir);
   const env = deps?.env ?? process.env;
   return configured
-    ? resolveUserPath(configured, env, deps?.homedir)
+    ? resolveUserPathLiteral(configured, env, deps?.homedir)
     : path.join(resolveStateDir(env, deps?.homedir), "agents", id, "agent");
 }
 

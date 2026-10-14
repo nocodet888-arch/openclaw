@@ -17,7 +17,8 @@ import { isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.j
 import { deriveSessionChatTypeFromKey } from "../sessions/session-chat-type-shared.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
-import { resolveUserPath } from "../utils.js";
+import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
+import { resolveUserPathLiteral } from "../utils.js";
 import { DuplicateAgentError } from "./agent-create-error.js";
 import { getAgentWorkspaceAccess } from "./workspace-access.js";
 import {
@@ -496,7 +497,7 @@ export async function resolveWorkspaceBootstrapStatus(
   dir: string,
   options: OpenClawStateDatabaseOptions = {},
 ): Promise<"pending" | "complete"> {
-  const resolvedDir = resolveUserPath(dir);
+  const resolvedDir = resolveUserPathLiteral(dir);
   const bootstrapPath = path.join(resolvedDir, DEFAULT_BOOTSTRAP_FILENAME);
   const complete =
     !(await pathExists(bootstrapPath)) || (await isWorkspaceSetupCompleted(resolvedDir, options));
@@ -555,8 +556,10 @@ function captureWorkspacePreparationGuard(guard?: WorkspaceStateGuard) {
 export async function ensureAgentWorkspace(
   params?: EnsureAgentWorkspaceParams,
 ): Promise<EnsuredAgentWorkspace> {
-  const rawDir = params?.dir?.trim() ? params.dir.trim() : DEFAULT_AGENT_WORKSPACE_DIR;
-  const dir = resolveUserPath(rawDir);
+  // Preserve literal whitespace in user-supplied workspace dirs (trailing
+  // spaces are valid path segments). resolveUserPath trims and would retarget.
+  const rawDir = readNonBlankString(params?.dir) ?? DEFAULT_AGENT_WORKSPACE_DIR;
+  const dir = resolveUserPathLiteral(rawDir);
   const captured = {
     ...params,
     dir,
@@ -591,8 +594,8 @@ export async function ensureSandboxWorkspace(
   skipOptionalBootstrapFiles?: OptionalBootstrapFileName[],
   guard?: WorkspaceStateGuard,
 ): Promise<void> {
-  const dir = resolveUserPath(workspaceDir);
-  const seed = seedFrom ? resolveUserPath(seedFrom) : undefined;
+  const dir = resolveUserPathLiteral(workspaceDir);
+  const seed = seedFrom ? resolveUserPathLiteral(seedFrom) : undefined;
   const skipOptional = skipOptionalBootstrapFiles && [...skipOptionalBootstrapFiles];
   const capturedGuard = captureWorkspacePreparationGuard(guard);
   const beforeMutation = createWorkspaceFileMutationGuard(capturedGuard);
@@ -906,7 +909,7 @@ export async function loadWorkspaceBootstrapFiles(
   dir: string,
   names?: readonly WorkspaceBootstrapFileName[],
 ): Promise<WorkspaceBootstrapFile[]> {
-  const resolvedDir = resolveUserPath(dir);
+  const resolvedDir = resolveUserPathLiteral(dir);
   const access = getAgentWorkspaceAccess(resolvedDir);
   // Cache hits still open files to validate identity, so select names before I/O.
   const entries = WORKSPACE_BOOTSTRAP_FILENAMES.filter(
@@ -987,7 +990,7 @@ function filterRootMemoryBootstrapFiles(
   if (!workspaceRoot) {
     return files.filter((file) => file.name !== DEFAULT_MEMORY_FILENAME);
   }
-  const resolvedWorkspaceRoot = resolveUserPath(workspaceRoot);
+  const resolvedWorkspaceRoot = resolveUserPathLiteral(workspaceRoot);
   const rootMemoryPath = path.join(resolvedWorkspaceRoot, DEFAULT_MEMORY_FILENAME);
   return files.filter((file) => {
     if (typeof file.path !== "string") {
@@ -1131,7 +1134,7 @@ export async function loadExtraBootstrapFilesWithDiagnostics(
   if (!extraPatterns.length) {
     return { files: [], diagnostics: [] };
   }
-  const resolvedDir = resolveUserPath(dir);
+  const resolvedDir = resolveUserPathLiteral(dir);
   const diagnostics: ExtraBootstrapLoadDiagnostic[] = [];
   const resolvedPaths = new Set<string>();
   for (const pattern of extraPatterns) {

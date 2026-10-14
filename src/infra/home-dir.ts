@@ -113,6 +113,29 @@ export function resolveUserPath(
   return resolveHomeRelativePath(input, { env, homedir });
 }
 
+/**
+ * Like resolveUserPath but keeps leading/trailing whitespace in the filesystem
+ * identity. Still expands leading `~` and absolutizes.
+ */
+export function resolveUserPathLiteral(
+  input: string,
+  env: NodeJS.ProcessEnv = process.env,
+  homedir: () => string = os.homedir,
+): string {
+  if (!input) {
+    return "";
+  }
+  const expanded = input.startsWith("~")
+    ? expandHomePrefix(input, {
+        home: resolveRequiredHomeDir(env, homedir),
+        env,
+        homedir,
+      })
+    : input;
+  const base = userPathBaseDirectory.getStore();
+  return base ? path.resolve(base, expanded) : path.resolve(expanded);
+}
+
 /** Resolves a user-supplied path against the OS home, ignoring OPENCLAW_HOME. */
 export function resolveOsHomeRelativePath(input: string, opts?: HomePathOptions): string {
   return resolvePathWithHome(input, opts, resolveRequiredOsHomeDir);

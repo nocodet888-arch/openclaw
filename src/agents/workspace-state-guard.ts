@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { hasErrnoCode } from "../infra/errno.js";
-import { resolveUserPath } from "../utils.js";
+import { resolveUserPathLiteral } from "../utils.js";
 import { WORKSPACE_BOOTSTRAP_FILENAMES } from "./workspace-bootstrap-policy.js";
 import {
   resolveCanonicalWorkspacePath,
@@ -26,7 +26,7 @@ export function captureWorkspaceStateFilesystemGuard(
   workspaceDir: string,
   content = true,
 ): () => void {
-  const dir = path.resolve(resolveUserPath(workspaceDir));
+  const dir = path.resolve(resolveUserPathLiteral(workspaceDir));
   const canonical = resolveCanonicalWorkspacePath(dir);
   const root = [statFact(dir, false, false), statFact(dir, true, false)];
   const entries = (directory: string) => {
