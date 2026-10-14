@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { resolveUserPath } from "../utils.js";
+import { resolveUserPathLiteral } from "../utils.js";
 
 export type WorkspaceStateIdentity = {
   workspaceKey: string;
@@ -22,7 +22,7 @@ function canonicalizeWorkspacePath(
   workspaceDir: string,
   normalizePath: (value: string) => string,
 ): string {
-  let candidate = path.resolve(resolveUserPath(workspaceDir));
+  let candidate = path.resolve(resolveUserPathLiteral(workspaceDir));
   const fallback = normalizePath(candidate);
   const followedSymlinks = new Set<string>();
 
@@ -80,7 +80,9 @@ export function createWorkspaceStateIdentity(workspacePath: string): WorkspaceSt
 }
 
 export function resolveWorkspaceStateAliases(workspaceDir: string): WorkspaceStateIdentity[] {
-  const lexicalPath = normalizeWorkspaceIdentityPath(path.resolve(resolveUserPath(workspaceDir)));
+  const lexicalPath = normalizeWorkspaceIdentityPath(
+    path.resolve(resolveUserPathLiteral(workspaceDir)),
+  );
   const canonicalPath = canonicalizeWorkspacePath(workspaceDir, normalizeWorkspaceIdentityPath);
   return [...new Set([lexicalPath, canonicalPath])].map(createWorkspaceStateIdentity);
 }

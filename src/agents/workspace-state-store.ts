@@ -7,7 +7,7 @@ import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-rea
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
-import { resolveUserPath } from "../utils.js";
+import { resolveUserPathLiteral } from "../utils.js";
 import { retireWorkspaceFileCache } from "./workspace-file-cache.js";
 import { readCachedWorkspaceStateSnapshot } from "./workspace-state-cache.js";
 import { captureWorkspaceStateFilesystemGuard } from "./workspace-state-guard.js";
@@ -132,7 +132,7 @@ export async function readWorkspaceStateSnapshot(
   workspaceDir: string,
   options: OpenClawStateDatabaseOptions & WorkspaceStateOperationOptions = {},
 ): Promise<WorkspaceStateSnapshot> {
-  const capturedWorkspaceDir = path.resolve(resolveUserPath(workspaceDir));
+  const capturedWorkspaceDir = path.resolve(resolveUserPathLiteral(workspaceDir));
   if (options.readOnly) {
     const assertFilesystem = captureWorkspaceStateFilesystemGuard(capturedWorkspaceDir, false);
     const reply = await executeExistingOpenClawStateRead(options, {
@@ -194,7 +194,7 @@ export async function mergeWorkspaceSetupState(
     {
       type: "workspace.mergeSetup",
       input: {
-        workspaceDir: path.resolve(resolveUserPath(workspaceDir)),
+        workspaceDir: path.resolve(resolveUserPathLiteral(workspaceDir)),
         next: { ...next },
         nowMs,
       },
@@ -209,7 +209,7 @@ export async function replaceWorkspaceAttestation(
   const context = captureOpenClawStateWorkerContext();
   const { assertCurrent } = params;
   const input = {
-    workspaceDir: path.resolve(resolveUserPath(params.workspaceDir)),
+    workspaceDir: path.resolve(resolveUserPathLiteral(params.workspaceDir)),
     attestedAtMs: params.attestedAtMs,
     generatedHashes: new Map(params.generatedHashes),
     nowMs: params.nowMs,
@@ -249,7 +249,7 @@ export async function clearExpiredWorkspaceStateForVanishedWorkspace(
     {
       type: "workspace.expire",
       input: {
-        workspaceDir: path.resolve(resolveUserPath(workspaceDir)),
+        workspaceDir: path.resolve(resolveUserPathLiteral(workspaceDir)),
         nowMs,
       },
     },

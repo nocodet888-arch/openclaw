@@ -1,6 +1,9 @@
 import { statSync } from "node:fs";
 import fs from "node:fs/promises";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeOptionalString,
+  readNonBlankString,
+} from "@openclaw/normalization-core/string-coerce";
 import { applyAgentBindings, parseBindingSpecs } from "../commands/agents.bindings.js";
 import {
   applyAgentConfig,
@@ -35,7 +38,7 @@ import { createOpenClawAgentDatabasePathMatcher } from "../state/openclaw-agent-
 import { prepareOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
 import { withExistingOpenClawStateDatabaseCurrentReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { isReservedSystemAgentId } from "../system-agent/agent-id.js";
-import { resolveUserPath } from "../utils.js";
+import { resolveUserPathLiteral } from "../utils.js";
 import { DuplicateAgentError } from "./agent-create-error.js";
 import { normalizeAgentDirRegistryPath } from "./agent-dir-registry.js";
 import { claimCompletedAgentDeletion } from "./agent-lifecycle-registry.js";
@@ -335,13 +338,13 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
       avatar: params.avatar,
     }) ?? { name: safeName };
   const requestedWorkspace = params.entry?.workspace ?? params.workspace;
-  const explicitWorkspace = requestedWorkspace?.trim()
-    ? resolveUserPath(requestedWorkspace.trim())
-    : undefined;
+  // Preserve literal path whitespace so trailing-space directories are not
+  // silently retargeted to a neighboring path (same contract as connect --target-file).
+  const workspaceLiteral = readNonBlankString(requestedWorkspace);
+  const explicitWorkspace = workspaceLiteral ? resolveUserPathLiteral(workspaceLiteral) : undefined;
   const requestedAgentDir = params.entry?.agentDir ?? params.agentDir;
-  const explicitAgentDir = requestedAgentDir?.trim()
-    ? resolveUserPath(requestedAgentDir.trim())
-    : undefined;
+  const agentDirLiteral = readNonBlankString(requestedAgentDir);
+  const explicitAgentDir = agentDirLiteral ? resolveUserPathLiteral(agentDirLiteral) : undefined;
   const transformConfig = params.transformConfig ?? transformConfigFileWithRetry;
   let configCommitReceipt: ConfigCommitReceipt | undefined;
   let creating = false;
