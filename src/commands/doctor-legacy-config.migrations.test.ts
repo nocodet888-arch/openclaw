@@ -79,6 +79,40 @@ describe("normalizeCompatibilityConfigValues", () => {
     expect(candidateOnly.changes).toStrictEqual(migrated.changes);
   });
 
+  it("normalizes blank heartbeat.every to 0m so upgrades keep disabled cadence", () => {
+    const res = normalizeCompatibilityConfigValues({
+      agents: {
+        defaults: {
+          heartbeat: {
+            every: "",
+            prompt: "keep-defaults",
+          },
+        },
+        entries: {
+          ops: {
+            heartbeat: {
+              every: "   ",
+              prompt: "keep-ops",
+            },
+          },
+        },
+      },
+    });
+
+    expect(res.config.agents?.defaults?.heartbeat).toEqual({
+      every: "0m",
+      prompt: "keep-defaults",
+    });
+    expect(res.config.agents?.entries?.ops?.heartbeat).toEqual({ every: "0m", prompt: "keep-ops" });
+    expect(res.changes).toContain(
+      'Normalized blank agents.defaults.heartbeat.every to "0m" (explicit disable); recurring heartbeats stay off.',
+    );
+    expect(res.changes).toContain(
+      'Normalized blank agents.entries.ops.heartbeat.every to "0m" (explicit disable); recurring heartbeats stay off.',
+    );
+    expect(validateConfigObject(res.config).ok).toBe(true);
+  });
+
   it("removes bindings for missing configured agents", () => {
     const config: OpenClawConfigWithLegacyRoster = {
       agents: { list: [{ id: "Team Ops" }] },
