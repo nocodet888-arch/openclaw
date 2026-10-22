@@ -212,7 +212,7 @@ describe("memory-wiki cli", () => {
   it("rejects blank and invalid UTF-8 --body-file before wiping synthesis", async () => {
     const { rootDir, config } = await createCliVault();
 
-    await runRegisteredWikiCommand(config, [
+    await runWiki(config, [
       "apply",
       "synthesis",
       "Good",
@@ -228,7 +228,7 @@ describe("memory-wiki cli", () => {
     const blankPath = path.join(rootDir, "blank-body.txt");
     await fs.writeFile(blankPath, "  \n\n");
     await expect(
-      runRegisteredWikiCommand(config, [
+      runWiki(config, [
         "apply",
         "synthesis",
         "Good",
@@ -243,7 +243,7 @@ describe("memory-wiki cli", () => {
     const latin1Path = path.join(rootDir, "latin1-body.txt");
     await fs.writeFile(latin1Path, Buffer.from([0x43, 0x61, 0x66, 0xe9, 0x20, 0x73, 0x75, 0x6d]));
     await expect(
-      runRegisteredWikiCommand(config, [
+      runWiki(config, [
         "apply",
         "synthesis",
         "Good",
