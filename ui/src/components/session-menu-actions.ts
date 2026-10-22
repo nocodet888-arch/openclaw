@@ -73,20 +73,10 @@ export type SessionManagementAction =
 
 export type SessionManagementActionKind = SessionManagementAction["kind"];
 
-export const EMPTY_SESSION_MENU_DATA: SessionMenuData = {
-  label: "",
-  sessionId: null,
-  pinned: false,
-  unread: false,
-  archived: false,
-  snoozedUntil: null,
-  category: null,
-  icon: null,
-  color: null,
-  categoryClearReturnsToGroups: false,
+type SessionMenuActionsHost = {
+  readonly updateComplete: Promise<boolean>;
+  focusCurrentView(): void;
 };
-
-type SessionMenuActionsHost = HTMLElement & { readonly updateComplete: Promise<boolean> };
 
 export type SessionMenuActionsState = {
   involvingMeContext?: boolean;
@@ -296,12 +286,7 @@ export class SessionMenuActions {
   }
 
   focusCurrentView(): void {
-    void this.host.updateComplete.then(() => {
-      const first =
-        this.host.querySelector<HTMLElement>(".session-menu__appearance button:not(:disabled)") ??
-        this.host.querySelector<HTMLElement>('[role^="menuitem"]:not([disabled])');
-      first?.focus();
-    });
+    void this.host.updateComplete.then(() => this.host.focusCurrentView());
   }
 
   handleKeydown(event: KeyboardEvent, appearancePicker: { showIconGrid: () => void }): boolean {
