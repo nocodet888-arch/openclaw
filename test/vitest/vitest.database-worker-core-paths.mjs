@@ -1371,6 +1371,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/reply-state.test.ts",
   "src/auto-reply/reply/session-entry-persistence.test.ts",
   "src/infra/heartbeat-summary-snapshot.test.ts",
+  "src/infra/heartbeat-cli-status.test.ts",
   "src/gateway/server-cron.projection.test.ts",
 ];
 
